@@ -6,6 +6,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { open, migrate, IS_REMOTE, LOCAL_FILE, describe } = require('./index');
 const E = require('../lib/engine');
+const IDS = require('../lib/ids');
 
 let s = 20261019; const rnd = () => { s |= 0; s = (s + 0x6D2B79F5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
 const ri = (a, b) => a + Math.floor(rnd() * (b - a + 1));
@@ -23,6 +24,7 @@ const COD_TEAMS = ['Nova Syndicate', 'Baobab Brigade', 'Indigo Order', 'Violet V
 async function clearExample(db) {
   const ts = await db.all('SELECT id FROM tournaments WHERE is_example=1');
   for (const t of ts) { await E.resetBracket(db, t.id); await db.run('DELETE FROM participants WHERE tournament_id=?', t.id); await db.run('DELETE FROM tournaments WHERE id=?', t.id); }
+  await db.run('DELETE FROM player_game_ids WHERE player_id IN (SELECT id FROM players WHERE is_example=1)');
   await db.run('DELETE FROM team_members WHERE team_id IN (SELECT id FROM teams WHERE is_example=1) OR player_id IN (SELECT id FROM players WHERE is_example=1)');
   await db.run('DELETE FROM participants WHERE team_id IN (SELECT id FROM teams WHERE is_example=1) OR player_id IN (SELECT id FROM players WHERE is_example=1)');
   await db.run(`DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE role='player' AND player_id IN (SELECT id FROM players WHERE is_example=1))`);
@@ -77,7 +79,17 @@ async function seed({ reset = false } = {}) {
   const db = open(); await migrate(db);
   await clearExample(db);
   const P = [];
-  for (const tag of TAGS) P.push((await db.run('INSERT INTO players (gamer_tag, real_name, country, bio, avatar_hue, is_example) VALUES (?,?,?,?,?,1)', tag, null, 'CM', 'Example player profile (demo data).', ri(225, 290))).lastInsertRowid);
+  const digits = n => Array.from({ length: n }, (_, i) => (i === 0 ? ri(1, 9) : ri(0, 9))).join('');
+  const rng = n => Math.floor(rnd() * n); // deterministic example gamz IDs
+  for (const tag of TAGS) {
+    const p = await IDS.createPlayer(db, { gamer_tag: tag, country: 'CM', bio: 'Example player profile (demo data).', avatar_hue: ri(225, 290), is_example: 1 }, rng);
+    P.push(p.id);
+    // EXAMPLE in-game IDs (made up) for every game
+    await IDS.setGameId(db, p.id, 'efootball', { in_game_id: `${digits(4)}-${digits(3)}-${digits(3)}`, in_game_name: tag });
+    await IDS.setGameId(db, p.id, 'dls', { in_game_id: 'DLS' + digits(8), in_game_name: tag + ' FC' });
+    await IDS.setGameId(db, p.id, 'pubgm', { in_game_id: '5' + digits(9), in_game_name: 'gmz.' + tag });
+    await IDS.setGameId(db, p.id, 'codm', { in_game_id: '67' + digits(14), in_game_name: tag + '_CM' });
+  }
   const mkTeam = async (name, game, members) => {
     const id = (await db.run('INSERT INTO teams (name, tag, game_id, is_example) VALUES (?,?,?,1)', name, name.split(' ').map(w => w[0]).join('').toUpperCase(), game)).lastInsertRowid;
     for (let i = 0; i < members.length; i++) await db.run('INSERT INTO team_members (team_id, player_id, role) VALUES (?,?,?)', id, members[i], i === 0 ? 'captain' : 'member');

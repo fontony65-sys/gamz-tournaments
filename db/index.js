@@ -31,8 +31,12 @@ async function migrate(db) {
   const dir = path.join(__dirname, 'migrations');
   const done = new Set((await db.all('SELECT name FROM schema_migrations')).map(r => r.name));
   const applied = [];
-  for (const f of fs.readdirSync(dir).filter(f => f.endsWith('.sql')).sort()) {
+  for (const f of fs.readdirSync(dir).filter(f => f.endsWith('.sql') || f.endsWith('.js')).sort()) {
     if (done.has(f)) continue;
+    if (f.endsWith('.js')) { // data migration written in JS (exports up(db))
+      await require(path.join(dir, f)).up(db);
+      await db.run('INSERT INTO schema_migrations(name) VALUES (?)', f); applied.push(f); continue;
+    }
     const stmts = fs.readFileSync(path.join(dir, f), 'utf8').split(/;\s*(?:--[^\n]*)?\n/).map(s => s.replace(/^\s*--.*$/gm, '').trim()).filter(Boolean);
     await db.batch([...stmts.map(s => [s]), ['INSERT INTO schema_migrations(name) VALUES (?)', [f]]]);
     applied.push(f);

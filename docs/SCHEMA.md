@@ -1,6 +1,6 @@
 # gamz database schema
 
-SQLite / libSQL (Turso in production, a local file `db/gamz.db` in development). Migrations are plain SQL files in
+SQLite / libSQL (Turso in production, a local file `db/gamz.db` in development). Migrations are SQL files (plus one `.js` data migration) in
 `db/migrations/`, applied in name order on every start (`schema_migrations` records which ran). Run them by hand with `npm run migrate`.
 
 | Migration | What it does |
@@ -8,6 +8,8 @@ SQLite / libSQL (Turso in production, a local file `db/gamz.db` in development).
 | `001_init.sql` | All tables and indexes below |
 | `002_games.sql` | Reference rows for the four games (eFootball, DLS, PUBG Mobile, CoD Mobile) |
 | `003_user_prefs.sql` | `users.theme` (dark/light preference synced to the account) |
+| `004_player_ids.sql` | `players.gamz_id` (unique index + immutability trigger), `player_game_ids` table, `games.id_label` / `games.id_hint` |
+| `005_backfill_gamz_ids.js` | Gives every existing player a gamz ID (JS migration: IDs are random + collision-checked, which plain SQL can't do) |
 
 ## ER diagram
 
@@ -16,6 +18,8 @@ erDiagram
   games ||--o{ tournaments : "hosts"
   games ||--o{ teams : "main game"
   players ||--o{ team_members : "is in"
+  players ||--o{ player_game_ids : "links in-game IDs"
+  games ||--o{ player_game_ids : "ID for"
   teams ||--o{ team_members : "has"
   players ||--o| users : "claimed by"
   users ||--o{ sessions : "logged in as"
@@ -38,15 +42,27 @@ erDiagram
     text accent
     text formats "JSON"
     text modes "JSON"
+    text id_label "e.g. eFootball User ID"
+    text id_hint "where to find it"
   }
   players {
     int id PK
+    text gamz_id UK "GMZ-7K3Q9P, immutable"
     text gamer_tag UK
     text real_name
     text country
     text bio
     int avatar_hue
     int is_example
+  }
+  player_game_ids {
+    int id PK
+    int player_id FK "UNIQUE(player_id, game_id)"
+    text game_id FK "UNIQUE(game_id, in_game_id)"
+    text in_game_id "NOCASE"
+    text in_game_name
+    text created_at
+    text updated_at
   }
   teams {
     int id PK
@@ -139,9 +155,20 @@ erDiagram
 
 **games** — the games gamz hosts (reference data, not example data). `family` decides the rules: `football` (goals, draws, penalties),
 `battle_royale` (placement + kill points), `team_shooter` (best-of-N series). `formats` / `modes` list what an organizer may pick.
+`id_label` / `id_hint` name the in-game ID and explain where to find it (eFootball User ID, Dream League Soccer Player ID,
+PUBG Mobile Character ID, CoD Mobile UID).
 
 **players** — one row per gamer (gamer tag is unique, case-insensitive). Can exist without an account; a player who signs up with the same
 gamer tag claims the row. `is_example = 1` marks seed/demo rows.
+`gamz_id` is the player's permanent public ID, `GMZ-` + 6 characters from the 31-symbol alphabet `23456789ABCDEFGHJKMNPQRSTUVWXYZ`
+(no 0/O, 1/I/L, so it can be read out loud or typed from a screenshot). It is generated at sign-up / organizer add / quick-add
+(`lib/ids.js`: random, checked against the table, retried on a clash; the UNIQUE index is the final guard) and can never change
+(trigger `trg_players_gamz_id_immutable`). Search accepts any spelling (`gmz7k3q9p`, `7K3Q9P`).
+
+**player_game_ids** — a player's account ID in each game, so opponents can add each other in-game. One per player per game
+(`UNIQUE(player_id, game_id)`, edits replace it) and an in-game ID belongs to one gamz player per game (`UNIQUE(game_id, in_game_id)`,
+case-insensitive). `in_game_name` is the optional name shown in the game. Registering for a tournament requires a row for that
+tournament's game (for teams: every roster member); organizers can override, and the response carries a warning.
 
 **teams**, **team_members** — squads, duos and 5v5 rosters. Team results on the overall leaderboard are credited to every current member.
 

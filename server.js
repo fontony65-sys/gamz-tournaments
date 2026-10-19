@@ -9,6 +9,7 @@ const { open, migrate, IS_REMOTE, describe } = require('./db');
 const E = require('./lib/engine');
 const LB = require('./lib/leaderboard');
 const { DEFAULT_POINTS_TABLE } = require('./lib/scoring');
+const IDS = require('./lib/ids');
 
 const PROD = process.env.NODE_ENV === 'production';
 const PORT = +process.env.PORT || 3000;
@@ -137,8 +138,14 @@ app.post('/api/signup', wrap(async (req, res) => {
   if (await db.get('SELECT 1 FROM users WHERE username=?', username)) return res.status(400).json({ error: 'That username is taken' });
   let p = await db.get('SELECT p.* FROM players p WHERE p.gamer_tag=?', tag);
   if (p && await db.get('SELECT 1 FROM users WHERE player_id=?', p.id)) return res.status(400).json({ error: 'That gamer tag already belongs to an account' });
+  if (req.body?.game_id && req.body?.in_game_id) { // optional: link a first in-game ID right away (validated before creating anything)
+    const g = await db.get('SELECT * FROM games WHERE id=?', req.body.game_id); if (!g) return res.status(400).json({ error: 'Unknown game' });
+    const clash = await db.get('SELECT player_id FROM player_game_ids WHERE game_id=? AND in_game_id=?', g.id, String(req.body.in_game_id).trim());
+    if (clash && (!p || clash.player_id !== p.id)) return res.status(400).json({ error: `That ${g.id_label} is already linked to another gamz player` });
+  }
   a.n++;
-  if (!p) { const r = await db.run('INSERT INTO players (gamer_tag, avatar_hue) VALUES (?,?)', tag, 220 + crypto.randomInt(80)); p = { id: r.lastInsertRowid }; }
+  if (!p) p = await IDS.createPlayer(db, { gamer_tag: tag });
+  if (req.body?.game_id && req.body?.in_game_id) await IDS.setGameId(db, p.id, req.body.game_id, req.body);
   const r = await db.run(`INSERT INTO users (username,password_hash,role,player_id) VALUES (?,?,'player',?)`, username, hashPw(password), p.id);
   const u = await db.get('SELECT * FROM users WHERE id=?', r.lastInsertRowid);
   await startSession(res, u); changed({ kind: 'players' });
@@ -161,6 +168,40 @@ app.put('/api/me', wrap(async (req, res) => {
     changed({ kind: 'players', player_id: req.user.player_id });
   }
   res.json({ user: publicUser(await db.get('SELECT * FROM users WHERE id=?', req.user.id)) });
+}));
+
+// In-game IDs: players manage their own; organizers can manage anyone's.
+async function putGameId(req, res, playerId) {
+  if (!(await db.get('SELECT 1 FROM players WHERE id=?', playerId))) return res.status(404).json({ error: 'Player not found' });
+  const row = await IDS.setGameId(db, playerId, req.params.game, req.body || {});
+  changed({ kind: 'players', player_id: +playerId }); res.json({ game_id: row.game_id, in_game_id: row.in_game_id, in_game_name: row.in_game_name, game_ids: await IDS.gameIdsOf(db, playerId) });
+}
+async function delGameId(req, res, playerId) {
+  await IDS.removeGameId(db, playerId, req.params.game); changed({ kind: 'players', player_id: +playerId }); res.json({ game_ids: await IDS.gameIdsOf(db, playerId) });
+}
+const mustPlayer = (req, res, next) => (!req.user ? res.status(401).json({ error: 'Please log in' }) : !req.user.player_id ? res.status(400).json({ error: 'This account has no player profile' }) : next());
+app.put('/api/me/game-ids/:game', mustPlayer, wrap((req, res) => putGameId(req, res, req.user.player_id)));
+app.delete('/api/me/game-ids/:game', mustPlayer, wrap((req, res) => delGameId(req, res, req.user.player_id)));
+
+// Search players / teams by gamer tag, gamz ID (any spelling: gmz7k3q9p, 7K3Q9P…), in-game ID or in-game name.
+app.get('/api/search', wrap(async (req, res) => {
+  const q = String(req.query.q || '').trim().slice(0, 60); if (q.length < 2) return res.json({ players: [], teams: [] });
+  const like = `%${q}%`, gz = IDS.normalizeGamzId(q);
+  const players = await db.all(`SELECT DISTINCT p.id, p.gamer_tag, p.gamz_id, p.avatar_hue, p.is_example,
+      CASE WHEN p.gamz_id=? THEN 'gamz ID' WHEN p.gamer_tag LIKE ? THEN 'gamer tag' ELSE 'in-game ID' END AS matched
+    FROM players p LEFT JOIN player_game_ids x ON x.player_id=p.id
+    WHERE p.gamz_id=? OR p.gamz_id LIKE ? OR p.gamer_tag LIKE ? OR x.in_game_id LIKE ? OR x.in_game_name LIKE ?
+    ORDER BY CASE WHEN p.gamz_id=? THEN 0 WHEN x.in_game_id=? THEN 1 ELSE 2 END, p.gamer_tag COLLATE NOCASE LIMIT 20`,
+    gz, like, gz, like.toUpperCase(), like, like, like, gz, q);
+  const all = players.length ? await db.all(`SELECT x.player_id, x.game_id, x.in_game_id, x.in_game_name, g.short_name AS game_short, g.id_label FROM player_game_ids x JOIN games g ON g.id=x.game_id WHERE x.player_id IN (${players.map(() => '?').join(',')}) ORDER BY g.sort_order`, ...players.map(p => p.id)) : [];
+  const ql = q.toLowerCase();
+  for (const p of players) {
+    p.game_ids = all.filter(x => x.player_id === p.id).map(({ player_id, ...x }) => x);
+    const hit = p.game_ids.find(x => x.in_game_id.toLowerCase().includes(ql) || (x.in_game_name || '').toLowerCase().includes(ql));
+    if (p.matched === 'in-game ID') p.matched = hit ? (hit.in_game_id.toLowerCase().includes(ql) ? hit.id_label : hit.game_short + ' in-game name') : 'gamz ID';
+  }
+  const teams = await db.all(`SELECT t.id, t.name, t.tag, t.game_id FROM teams t WHERE t.name LIKE ? OR t.tag LIKE ? ORDER BY t.name LIMIT 10`, like, like);
+  res.json({ players, teams });
 }));
 
 app.get('/api/games', wrap(async (req, res) => {
@@ -217,19 +258,20 @@ async function historyFor(where, args) {
   for (const p of parts) { const d = await E.loadTournament(db, p.tournament_id); p.rank = (d.participants.find(x => x.id === p.id) || {}).rank || null; }
   return parts;
 }
-app.get('/api/players', wrap(async (req, res) => res.json(await db.all(`SELECT p.*, (SELECT COUNT(*) FROM participants pa WHERE pa.player_id=p.id) AS solo_entries FROM players p ORDER BY p.gamer_tag COLLATE NOCASE`))));
+app.get('/api/players', wrap(async (req, res) => res.json(await db.all(`SELECT p.*, (SELECT COUNT(*) FROM participants pa WHERE pa.player_id=p.id) AS solo_entries, (SELECT group_concat(x.game_id) FROM player_game_ids x WHERE x.player_id=p.id) AS linked_games FROM players p ORDER BY p.gamer_tag COLLATE NOCASE`))));
 app.get('/api/players/:id', wrap(async (req, res) => {
   const p = await db.get('SELECT p.*, (SELECT username FROM users u WHERE u.player_id=p.id) AS account FROM players p WHERE id=?', req.params.id); if (!p) return res.status(404).json({ error: 'Player not found' });
   const teams = await db.all('SELECT t.*, tm.role, g.short_name AS game_short FROM team_members tm JOIN teams t ON t.id=tm.team_id LEFT JOIN games g ON g.id=t.game_id WHERE tm.player_id=?', p.id);
   const history = await historyFor('(pa.player_id=? OR pa.team_id IN (SELECT team_id FROM team_members WHERE player_id=?))', [p.id, p.id]);
   const lb = await LB.get(db), overall = lb.overall.find(r => r.id === p.id) || null;
   const per_game = Object.entries(lb.games).flatMap(([g, rows]) => rows.filter(r => (r.type === 'player' && r.id === p.id) || (r.type === 'team' && teams.some(t => t.id === r.id))).map(r => ({ game_id: g, ...r })));
-  res.json({ player: { ...p, account: !!p.account }, teams, history, overall, per_game, recent: await recentFor(history.map(h => h.id)) });
+  res.json({ player: { ...p, account: !!p.account }, game_ids: await IDS.gameIdsOf(db, p.id), teams, history, overall, per_game, recent: await recentFor(history.map(h => h.id)) });
 }));
-app.get('/api/teams', wrap(async (req, res) => res.json(await db.all(`SELECT t.*, g.short_name AS game_short, (SELECT COUNT(*) FROM team_members m WHERE m.team_id=t.id) AS member_count FROM teams t LEFT JOIN games g ON g.id=t.game_id ORDER BY t.name COLLATE NOCASE`))));
+app.get('/api/teams', wrap(async (req, res) => res.json(await db.all(`SELECT t.*, g.short_name AS game_short, (SELECT COUNT(*) FROM team_members m WHERE m.team_id=t.id) AS member_count, (SELECT group_concat(DISTINCT x.game_id) FROM player_game_ids x WHERE x.player_id IN (SELECT player_id FROM team_members m WHERE m.team_id=t.id)) AS any_linked_games, (SELECT COUNT(*) FROM team_members m WHERE m.team_id=t.id AND NOT EXISTS (SELECT 1 FROM player_game_ids x WHERE x.player_id=m.player_id AND x.game_id=t.game_id)) AS members_missing_id FROM teams t LEFT JOIN games g ON g.id=t.game_id ORDER BY t.name COLLATE NOCASE`))));
 app.get('/api/teams/:id', wrap(async (req, res) => {
   const t = await db.get('SELECT t.*, g.short_name AS game_short, g.name AS game_name FROM teams t LEFT JOIN games g ON g.id=t.game_id WHERE t.id=?', req.params.id); if (!t) return res.status(404).json({ error: 'Team not found' });
-  const members = await db.all('SELECT p.id, p.gamer_tag, p.avatar_hue, tm.role FROM team_members tm JOIN players p ON p.id=tm.player_id WHERE tm.team_id=? ORDER BY CASE tm.role WHEN \'captain\' THEN 0 WHEN \'member\' THEN 1 ELSE 2 END, p.gamer_tag', t.id);
+  const members = await db.all(`SELECT p.id, p.gamer_tag, p.gamz_id, p.avatar_hue, tm.role, gi.in_game_id, gi.in_game_name FROM team_members tm JOIN players p ON p.id=tm.player_id
+    LEFT JOIN player_game_ids gi ON gi.player_id=p.id AND gi.game_id=? WHERE tm.team_id=? ORDER BY CASE tm.role WHEN 'captain' THEN 0 WHEN 'member' THEN 1 ELSE 2 END, p.gamer_tag`, t.game_id, t.id);
   const history = await historyFor('pa.team_id=?', [t.id]);
   const lb = await LB.get(db);
   const per_game = Object.entries(lb.games).flatMap(([g, rows]) => rows.filter(r => r.type === 'team' && r.id === t.id).map(r => ({ game_id: g, ...r })));
@@ -255,8 +297,9 @@ app.get('/api/overview', wrap(async (req, res) => {
 // ---------- organizer / admin API ----------
 app.post('/api/players', STAFF, wrap(async (req, res) => {
   const tag = String(req.body?.gamer_tag || '').trim(); if (!TAG_RE.test(tag)) return res.status(400).json({ error: 'Gamer tag: 2–24 characters' });
-  const r = await db.run('INSERT INTO players (gamer_tag, real_name, country, avatar_hue) VALUES (?,?,?,?)', tag, req.body.real_name || null, req.body.country || 'CM', 220 + crypto.randomInt(80));
-  changed({ kind: 'players' }); res.status(201).json(await db.get('SELECT * FROM players WHERE id=?', r.lastInsertRowid));
+  const p = await IDS.createPlayer(db, { gamer_tag: tag, real_name: req.body.real_name, country: req.body.country });
+  if (req.body.game_id && req.body.in_game_id) await IDS.setGameId(db, p.id, req.body.game_id, req.body);
+  changed({ kind: 'players' }); res.status(201).json({ ...(await db.get('SELECT * FROM players WHERE id=?', p.id)), game_ids: await IDS.gameIdsOf(db, p.id) });
 }));
 app.put('/api/players/:id', STAFF, wrap(async (req, res) => {
   const f = {}; for (const k of ['gamer_tag', 'real_name', 'country', 'bio']) if (req.body?.[k] !== undefined) f[k] = String(req.body[k]).trim() || null;
@@ -264,6 +307,8 @@ app.put('/api/players/:id', STAFF, wrap(async (req, res) => {
   const k = Object.keys(f); if (k.length) await db.run(`UPDATE players SET ${k.map(x => x + '=?').join(',')} WHERE id=?`, ...k.map(x => f[x]), req.params.id);
   changed({ kind: 'players' }); res.json(await db.get('SELECT * FROM players WHERE id=?', req.params.id));
 }));
+app.put('/api/players/:id/game-ids/:game', STAFF, wrap((req, res) => putGameId(req, res, req.params.id)));
+app.delete('/api/players/:id/game-ids/:game', STAFF, wrap((req, res) => delGameId(req, res, req.params.id)));
 app.post('/api/teams', STAFF, wrap(async (req, res) => {
   const b = req.body || {}, name = String(b.name || '').trim(); if (!TAG_RE.test(name)) return res.status(400).json({ error: 'Team name: 2–24 characters' });
   const r = await db.run('INSERT INTO teams (name, tag, game_id) VALUES (?,?,?)', name, (b.tag || '').trim().slice(0, 6) || null, b.game_id || null);
@@ -318,20 +363,42 @@ app.delete('/api/tournaments/:id', STAFF, wrap(async (req, res) => {
   await db.run('DELETE FROM participants WHERE tournament_id=?', t.id); await db.run('DELETE FROM tournaments WHERE id=?', t.id);
   changed({ kind: 'tournament', tournament_id: t.id, game_id: t.game_id }); res.json({ deleted: t.id });
 }));
+// Registration requires a linked in-game ID for the tournament's game (every roster member for teams).
+// Organizers may override with override_id_check: true — the response then carries a warning.
+async function missingGameIds(t, playerId, teamId) {
+  if (playerId) return (await db.get('SELECT 1 FROM player_game_ids WHERE player_id=? AND game_id=?', playerId, t.game_id)) ? [] : [(await db.get('SELECT gamer_tag FROM players WHERE id=?', playerId)).gamer_tag];
+  const m = await db.all('SELECT p.gamer_tag, gi.in_game_id FROM team_members tm JOIN players p ON p.id=tm.player_id LEFT JOIN player_game_ids gi ON gi.player_id=p.id AND gi.game_id=? WHERE tm.team_id=?', t.game_id, teamId);
+  return m.length ? m.filter(x => !x.in_game_id).map(x => x.gamer_tag) : ['(team has no roster)'];
+}
 app.post('/api/tournaments/:id/participants', STAFF, wrap(async (req, res) => {
   const t = await E.getT(db, req.params.id), b = req.body || {};
   if ((await db.get('SELECT COUNT(*) c FROM matches WHERE tournament_id=?', t.id)).c) throw E.err('Bracket already generated — reset it to change participants');
-  const teamMode = !['1v1', 'solo'].includes(t.mode);
-  let pid = b.player_id ? Number(b.player_id) : null, tid = b.team_id ? Number(b.team_id) : null;
+  const teamMode = !['1v1', 'solo'].includes(t.mode), override = b.override_id_check === true || b.override_id_check === 'true';
+  const g = await db.get('SELECT * FROM games WHERE id=?', t.game_id);
+  let pid = b.player_id ? Number(b.player_id) : null, tid = b.team_id ? Number(b.team_id) : null, newName = null;
   if (b.new_name) {
-    const n = String(b.new_name).trim(); if (!TAG_RE.test(n)) throw E.err('Name: 2–24 characters');
-    if (teamMode) { const ex = await db.get('SELECT id FROM teams WHERE name=?', n); tid = ex ? ex.id : (await db.run('INSERT INTO teams (name, game_id) VALUES (?,?)', n, t.game_id)).lastInsertRowid; }
-    else { const ex = await db.get('SELECT id FROM players WHERE gamer_tag=?', n); pid = ex ? ex.id : (await db.run('INSERT INTO players (gamer_tag, avatar_hue) VALUES (?,?)', n, 220 + crypto.randomInt(80))).lastInsertRowid; }
+    newName = String(b.new_name).trim(); if (!TAG_RE.test(newName)) throw E.err('Name: 2–24 characters');
+    if (teamMode) { const ex = await db.get('SELECT id FROM teams WHERE name=?', newName); if (ex) tid = ex.id; }
+    else { const ex = await db.get('SELECT id FROM players WHERE gamer_tag=?', newName); if (ex) pid = ex.id; }
   }
-  if (teamMode ? !tid : !pid) throw E.err(teamMode ? 'Choose a team' : 'Choose a player');
+  const igid = !teamMode && b.in_game_id ? String(b.in_game_id).trim() : '';
+  if (igid) { // validate the in-game ID before creating anything
+    const clash = await db.get('SELECT player_id FROM player_game_ids WHERE game_id=? AND in_game_id=?', t.game_id, igid);
+    if (clash && clash.player_id !== pid) throw E.err(`That ${g.id_label} is already linked to another gamz player`);
+  }
+  const willCreate = newName && (teamMode ? !tid : !pid);
+  let missing = willCreate ? (teamMode ? ['(new team has no roster)'] : (igid ? [] : [newName])) : (teamMode ? (tid ? await missingGameIds(t, null, tid) : []) : (pid ? (igid ? [] : await missingGameIds(t, pid, null)) : []));
+  if (!willCreate && (teamMode ? !tid : !pid)) throw E.err(teamMode ? 'Choose a team' : 'Choose a player');
+  if (missing.length && !override) return res.status(409).json({ error: `No ${g.id_label} linked for: ${missing.join(', ')}`, code: 'missing_game_id', missing, id_label: g.id_label });
+  if (willCreate) {
+    if (teamMode) tid = (await db.run('INSERT INTO teams (name, game_id) VALUES (?,?)', newName, t.game_id)).lastInsertRowid;
+    else pid = (await IDS.createPlayer(db, { gamer_tag: newName })).id;
+  }
+  if (igid) await IDS.setGameId(db, pid, t.game_id, { in_game_id: igid, in_game_name: b.in_game_name });
   const seed = ((await db.get('SELECT MAX(seed) s FROM participants WHERE tournament_id=?', t.id)).s || 0) + 1;
   const r = await db.run('INSERT INTO participants (tournament_id, player_id, team_id, seed) VALUES (?,?,?,?)', t.id, teamMode ? null : pid, teamMode ? tid : null, seed);
-  changed({ kind: 'participants', tournament_id: t.id, game_id: t.game_id }); res.status(201).json({ id: r.lastInsertRowid });
+  changed({ kind: 'participants', tournament_id: t.id, game_id: t.game_id });
+  res.status(201).json({ id: r.lastInsertRowid, ...(missing.length ? { warning: `Registered without a ${g.id_label} for: ${missing.join(', ')}. Opponents won't be able to find them in-game until it is added.` } : {}) });
 }));
 app.put('/api/tournaments/:id/seeds', STAFF, wrap(async (req, res) => {
   const t = await E.getT(db, req.params.id), order = (req.body?.order || []).map(Number);

@@ -22,6 +22,22 @@ remove example data).
 
 **Players:** can sign up (gamer tag + username + password) to claim their profile, edit their bio and keep their theme on every device.
 
+### gamz IDs and game IDs
+
+- **gamz ID**: every player gets a permanent ID like **GMZ-7K3Q9P**. It's created automatically when they sign up or an organizer adds them, and it never changes.
+  - It uses no look-alike characters (no 0/O or 1/I/L), so it's easy to read out or copy from a screenshot.
+  - It shows on the profile, the Me page, leaderboard rows and the player search. Tap it to copy.
+- **Game IDs**: on the **Me** page, players add, edit or remove their ID for each game:
+  - eFootball User ID
+  - Dream League Soccer Player ID
+  - PUBG Mobile Character ID
+  - CoD Mobile UID
+
+  Each game shows a hint on where to find the ID. Players can add one at sign-up; organizers can set one on quick-add or from the player's profile. One game ID can belong to only one gamz player.
+- **Registering for a tournament needs the game ID for that game**; for teams, every member needs one. If someone doesn't have it yet, the organizer gets a warning and can register them anyway.
+- **Finding opponents**: match cards, the match pop-up, pairing cards and the player and team lists show the in-game name and ID, so players can add each other in the game.
+- **Search** (Ranks → *Find player*, and the organizer desk) works with a gamz ID, gamer tag, or any game ID or in-game name.
+
 ### Game formats
 
 | Game | Formats | Scoring |
@@ -139,8 +155,9 @@ lib/bracket.js            Pure bracket builders: seeding, byes, single/double el
 lib/engine.js             Tournament engine: generate, auto-advance (settle), results, BR results, standings, final ranks
 lib/scoring.js            Points tables, BR standings, league table, placement points
 lib/leaderboard.js        Per-game + overall leaderboards (recomputed from results, cached until the next write)
+lib/ids.js                gamz IDs (generate, collision check, normalise for search) + per-game in-game IDs
 db/index.js               libSQL client (GAMZ_DATABASE_URL / GAMZ_DATABASE_TOKEN or local file) + migration runner
-db/migrations/*.sql       Schema migrations
+db/migrations/            Schema migrations (*.sql) + 005_backfill_gamz_ids.js data migration
 db/seed.js                EXAMPLE data (local only) and example-data removal
 public/                   index.html, app.js (single-page app), app.css (dark + light themes), manifest, icons, fonts
 scripts/verify.js         Automated tests
@@ -161,6 +178,9 @@ Text colours meet WCAG AA contrast in both themes. Fonts: Inter + Space Grotesk 
 ## API (short)
 
 Public: `GET /api/health`, `/api/games`, `/api/tournaments`, `/api/tournaments/:id`, `/api/leaderboard?game=`, `/api/players/:id`,
-`/api/teams/:id`, `/api/overview`, `/api/stream` (SSE). Auth: `POST /api/login`, `/api/logout`, `/api/signup`, `PUT /api/me`.
+`/api/teams/:id`, `/api/overview`, `/api/search?q=` (gamz ID / gamer tag / in-game ID or name), `/api/stream` (SSE).
+Auth: `POST /api/login`, `/api/logout`, `/api/signup` (optional `game_id` + `in_game_id` + `in_game_name`), `PUT /api/me`,
+`PUT|DELETE /api/me/game-ids/:game`.
 Organizer: `POST /api/tournaments`, `/api/tournaments/:id/participants`, `/generate`, `/knockout`, `/reset`, `POST /api/matches/:id/result`,
-`/br-result`, `DELETE /api/matches/:id/result`, players/teams. Admin: `/api/users`, `/api/system`.
+`/br-result`, `DELETE /api/matches/:id/result`, players/teams, `PUT|DELETE /api/players/:id/game-ids/:game`.
+Registering without the game's ID returns `409 {code: "missing_game_id"}`; resend with `override_id_check: true` to register anyway (the response has a `warning`). Admin: `/api/users`, `/api/system`.

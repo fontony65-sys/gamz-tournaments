@@ -24,6 +24,8 @@ const ICONS = {
   efootball: sv('<circle cx="12" cy="12" r="9"/><path d="m12 7 4 3-1.5 4.5h-5L8 10z"/><path d="M12 3v4M21 10l-5 0M3 10h5M15 20l-.5-5.5M9 20l.5-5.5"/>'),
   dls: sv('<circle cx="12" cy="12" r="9"/><path d="m12 6.5 1.6 3.3 3.6.5-2.6 2.5.6 3.6-3.2-1.7-3.2 1.7.6-3.6-2.6-2.5 3.6-.5z"/>'),
   pubgm: sv('<path d="M3 11a9 7 0 0 1 18 0z"/><path d="M3 11l9 9 9-9"/><path d="M12 11v9M7.5 11 12 20M16.5 11 12 20"/>'),
+  copy: sv('<rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M5 15V6a2 2 0 0 1 2-2h8"/>'), search: sv('<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>'),
+  idcard: sv('<rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="9" cy="11" r="2.2"/><path d="M5.8 16a3.4 3.4 0 0 1 6.4 0M14 10h4M14 13.5h3"/>'),
   codm: sv('<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2.5"/><path d="M12 1.5v5M12 17.5v5M1.5 12h5M17.5 12h5"/>'),
 };
 const icon = n => ICONS[n] || '';
@@ -34,7 +36,7 @@ async function api(path, opts = {}) {
   const o = { credentials: 'same-origin', headers: {}, ...opts };
   if (o.body && typeof o.body !== 'string') { o.body = JSON.stringify(o.body); o.headers['Content-Type'] = 'application/json'; }
   const r = await fetch(path, o); let j = null; try { j = await r.json(); } catch {}
-  if (!r.ok) { const e = new Error((j && j.error) || `Request failed (${r.status})`); e.status = r.status; throw e; }
+  if (!r.ok) { const e = new Error((j && j.error) || `Request failed (${r.status})`); e.status = r.status; e.data = j || {}; throw e; }
   return j;
 }
 function toast(msg, err = false) {
@@ -57,6 +59,28 @@ const isStaff = () => S.me && (S.me.role === 'admin' || S.me.role === 'organizer
 const isTeamMode = t => !['1v1', 'solo'].includes(t.mode);
 const profileLink = p => p.player_id ? `#/p/${p.player_id}` : `#/team/${p.team_id}`;
 const empty = (msg, ic = 'spark') => `<div class="empty">${icon(ic)}<div>${msg}</div></div>`;
+/* gamz IDs + in-game IDs */
+const copyBtn = (text, what = 'ID') => `<button type="button" class="copy-btn" data-copy="${esc(text)}" aria-label="Copy ${esc(what)} ${esc(text)}" title="Copy">${icon('copy')}</button>`;
+const gzChip = (id, cls = '') => id ? `<span class="gz-chip ${cls}" title="gamz ID"><span class="lbl">gamz ID</span><span class="num">${esc(id)}</span>${copyBtn(id, 'gamz ID')}</span>` : '';
+const gzMini = id => id ? `<span class="gz-mini num" data-copy="${esc(id)}" role="button" tabindex="0" title="Copy gamz ID">${esc(id)}</span>` : '';
+const idLabel = gid => game(gid).id_label || 'In-game ID';
+// "in-game name · ID" line; copyable when withCopy
+const igLine = (x, withCopy = false) => x && x.in_game_id ? `<span class="ig">${x.in_game_name ? `<span class="ign">${esc(x.in_game_name)}</span><span class="sep" aria-hidden="true">·</span>` : ''}<span class="igid"><span class="num">${esc(x.in_game_id)}</span>${withCopy ? copyBtn(x.in_game_id, 'in-game ID') : ''}</span></span>` : '';
+const noId = gid => `<span class="ig missing">No ${esc(idLabel(gid))} linked</span>`;
+async function copyText(t) {
+  try { await navigator.clipboard.writeText(t); } catch { const a = document.createElement('textarea'); a.value = t; a.style.position = 'fixed'; a.style.opacity = 0; document.body.append(a); a.select(); try { document.execCommand('copy'); } catch {} a.remove(); }
+  toast('Copied ' + t);
+}
+document.addEventListener('click', e => { const c = e.target.closest('[data-copy]'); if (!c) return; e.preventDefault(); e.stopPropagation(); copyText(c.dataset.copy); }, true);
+document.addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && e.target.matches && e.target.matches('.gz-mini[data-copy]')) { e.preventDefault(); copyText(e.target.dataset.copy); } });
+// Who-is-who box for match modals: in-game names + IDs (team members' too) so opponents can add each other.
+function findEachOther(d, sides) {
+  const gid = d.tournament.game_id, rows = sides.filter(Boolean).map(p => {
+    if (p.team_id) return `<div class="fe-side"><div class="fe-name">${esc(p.name)}</div>${(p.members || []).length ? p.members.map(m => `<div class="fe-mem"><span class="ellipsis">${esc(m.gamer_tag)}${m.role === 'captain' ? ' ★' : ''}</span>${m.in_game_id ? igLine(m, true) : noId(gid)}</div>`).join('') : '<div class="tiny dim">No roster listed</div>'}</div>`;
+    return `<div class="fe-side"><div class="fe-name">${esc(p.name)} ${gzMini(p.gamz_id)}</div>${p.in_game_id ? igLine(p, true) : noId(gid)}</div>`;
+  });
+  return rows.length ? `<div class="find-box"><div class="tiny dim" style="margin-bottom:6px">${icon('idcard')} Find each other in ${esc(game(gid).short_name)} · ${esc(idLabel(gid))}</div>${rows.join('')}</div>` : '';
+}
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : (w.endsWith('ch') ? 'es' : 's')}`;
 
 /* ---------- theme ---------- */
@@ -213,7 +237,7 @@ function bracketHTML(d, stages, flashId) {
   if (stages.includes('winners')) sections.push({ title: d.tournament.format === 'double_elim' ? 'Winners bracket' : '', ms: ms.filter(m => m.stage === 'winners') });
   if (stages.includes('losers')) sections.push({ title: 'Losers bracket', ms: ms.filter(m => m.stage === 'losers') });
   if (stages.includes('grand_final')) sections.push({ title: 'Grand final', ms: ms.filter(m => m.stage === 'grand_final' || (m.stage === 'grand_final_reset' && m.status !== 'void')) });
-  const W = 188, H = 61, VG = 14, CG = 40, TOP = 26;
+  const withIds = !isTeamMode(d.tournament), W = 188, H = withIds ? 81 : 61, VG = 14, CG = 40, TOP = 26;
   return sections.filter(s => s.ms.length).map(sec => {
     const rk = m => m.stage === 'grand_final_reset' ? 2 : m.round;
     const rounds = [...new Set(sec.ms.map(rk))].sort((a, b) => a - b);
@@ -243,9 +267,9 @@ function bracketHTML(d, stages, flashId) {
         const cls = pid ? (m.winner_id ? (m.winner_id === pid ? 'win' : 'lose') : '') : 'tbd';
         const sc = r ? (side === 'home' ? r.home_score : r.away_score) : '';
         const pk = r && r.home_pens != null ? `<span class="pk">(${side === 'home' ? r.home_pens : r.away_pens})</span>` : '';
-        return `<div class="slot ${cls}"><span class="sd">${part && part.seed && m.stage === 'winners' && m.round === 1 ? part.seed : ''}</span><span class="nm">${part ? esc(part.name) : isBye ? 'bye' : 'TBD'}</span><span class="sc num">${sc}${pk}</span></div>`;
+        return `<div class="slot ${cls}"><span class="sd">${part && part.seed && m.stage === 'winners' && m.round === 1 ? part.seed : ''}</span><span class="nm">${part ? esc(part.name) : isBye ? 'bye' : 'TBD'}${withIds && part ? `<span class="igs">${part.in_game_id ? esc(part.in_game_id) : 'no ID'}</span>` : ''}</span><span class="sc num">${sc}${pk}</span></div>`;
       };
-      return `<div class="match ${m.status} ${m.id === flashId ? 'flash' : ''}" data-mid="${m.id}" style="left:${p.x}px;top:${p.y}px" role="button" tabindex="0" aria-label="${esc(m.label)}">${slot('home')}${slot('away')}</div>`;
+      return `<div class="match ${withIds ? 'ids' : ''} ${m.status} ${m.id === flashId ? 'flash' : ''}" data-mid="${m.id}" style="left:${p.x}px;top:${p.y}px" role="button" tabindex="0" aria-label="${esc(m.label)}">${slot('home')}${slot('away')}</div>`;
     }).join('');
     return `<div class="bracket-section">${sec.title ? `<h3>${sec.title}</h3>` : ''}<div class="bracket-scroll"><div class="bracket" style="width:${width}px;height:${height}px">${labels}<svg class="lines" width="${width}" height="${height}">${lines.join('')}</svg>${cards}</div></div></div>`;
   }).join('');
@@ -297,13 +321,13 @@ function matchesList(d) {
     if (m.stage === 'br') { const top = (m.br || []).slice(0, 3).map(r => esc(P.get(r.participant_id)?.name)).join(' · '); return `<div class="list-row" data-mid="${m.id}" style="cursor:pointer"><div class="grow"><div style="font-weight:600">${esc(m.map_name || '')}</div><div class="tiny dim ellipsis">${m.status === 'completed' ? '🍗 ' + top : 'Not played yet'}</div></div>${m.status === 'completed' ? '<span class="badge completed">✓ Played</span>' : '<span class="badge registration">Upcoming</span>'}</div>`; }
     const h = P.get(m.home_id), a = P.get(m.away_id), r = m.result;
     if (m.status === 'bye') return `<div class="list-row"><div class="grow dim small">${esc((h || a)?.name || '—')} — bye, advances</div></div>`;
-    return `<div class="list-row result-row" data-mid="${m.id}" style="cursor:pointer"><div class="side ${m.winner_id && m.winner_id === m.home_id ? 'w' : ''} ellipsis">${esc(h?.name || 'TBD')}</div><div style="text-align:center">${r ? `<div class="score-pill num">${r.home_score} – ${r.away_score}</div>${r.home_pens != null ? `<div class="tiny dim">pens ${r.home_pens}–${r.away_pens}</div>` : ''}` : `<span class="badge ${m.status === 'ready' ? 'live' : 'draft'}">${m.status === 'ready' ? 'Up next' : 'Waiting'}</span>`}</div><div class="side r ${m.winner_id && m.winner_id === m.away_id ? 'w' : ''} ellipsis">${esc(a?.name || 'TBD')}</div></div>`;
+    return `<div class="list-row result-row" data-mid="${m.id}" style="cursor:pointer"><div class="side ${m.winner_id && m.winner_id === m.home_id ? 'w' : ''} ellipsis">${esc(h?.name || 'TBD')}${h && h.in_game_id ? `<div class="tiny dim ellipsis num">${esc(h.in_game_id)}</div>` : ''}</div><div style="text-align:center">${r ? `<div class="score-pill num">${r.home_score} – ${r.away_score}</div>${r.home_pens != null ? `<div class="tiny dim">pens ${r.home_pens}–${r.away_pens}</div>` : ''}` : `<span class="badge ${m.status === 'ready' ? 'live' : 'draft'}">${m.status === 'ready' ? 'Up next' : 'Waiting'}</span>`}</div><div class="side r ${m.winner_id && m.winner_id === m.away_id ? 'w' : ''} ellipsis">${esc(a?.name || 'TBD')}${a && a.in_game_id ? `<div class="tiny dim ellipsis num">${esc(a.in_game_id)}</div>` : ''}</div></div>`;
   }).join('')}</div>`).join('');
 }
 function entrantsList(d) {
   const ps = [...d.participants].sort((a, b) => (a.rank || 999) - (b.rank || 999) || (a.seed || 999) - (b.seed || 999));
   if (!ps.length) return `<div class="card">${empty('No one registered yet.')}</div>`;
-  return `<div class="card pad-0 list">${ps.map(p => `<a class="list-row" href="${profileLink(p)}"><span class="rank ${p.rank ? 'r' + p.rank : ''}">${p.rank || p.seed || ''}</span>${avatar(p.name, p.avatar_hue, !!p.team_id)}<div class="grow"><div style="font-weight:600" class="ellipsis">${esc(p.name)}</div><div class="tiny dim">${p.seed ? 'Seed ' + p.seed : ''}${p.group_label ? ' · ' + esc(p.group_label) : ''}${p.rank ? ' · Finished #' + p.rank : ''}</div></div><span style="color:var(--dim);width:16px">${icon('arrow')}</span></a>`).join('')}</div>`;
+  return `<div class="card pad-0 list">${ps.map(p => `<a class="list-row" href="${profileLink(p)}"><span class="rank ${p.rank ? 'r' + p.rank : ''}">${p.rank || p.seed || ''}</span>${avatar(p.name, p.avatar_hue, !!p.team_id)}<div class="grow"><div style="font-weight:600" class="ellipsis">${esc(p.name)}</div><div class="tiny dim">${p.seed ? 'Seed ' + p.seed : ''}${p.group_label ? ' · ' + esc(p.group_label) : ''}${p.rank ? ' · Finished #' + p.rank : ''}</div>${p.team_id ? `<div class="mem-ids">${(p.members || []).map(m => `<span class="mem-id"><b>${esc(m.gamer_tag)}</b> ${m.in_game_id ? `<span class="num">${esc(m.in_game_id)}</span>` : '<span class="missing">no ID</span>'}</span>`).join('')}</div>` : `<div class="tiny">${p.in_game_id ? igLine(p, true) : noId(d.tournament.game_id)}</div>`}</div><span style="color:var(--dim);width:16px">${icon('arrow')}</span></a>`).join('')}</div>`;
 }
 const canEdit = m => m.stage === 'br' || (m.home_id && m.away_id && ['ready', 'completed'].includes(m.status));
 function matchDetail(d, mid) {
@@ -315,6 +339,7 @@ function matchDetail(d, mid) {
       ${(m.br || []).length ? `<div class="table-wrap" style="margin-top:12px"><table class="tbl"><thead><tr><th>#</th><th class="l">${isTeamMode(d.tournament) ? 'Team' : 'Player'}</th><th>Kills</th></tr></thead><tbody>${m.br.map(x => `<tr><td>${x.placement}</td><td class="l">${esc(P.get(x.participant_id)?.name)}</td><td>${x.kills}</td></tr>`).join('')}</tbody></table></div>` : ''}`);
   }
   openModal(`<div class="eyebrow">${esc(m.label)}</div><h2 style="margin-top:4px">${esc(h?.name || 'TBD')} <span class="dim">vs</span> ${esc(a?.name || 'TBD')}</h2>
+    ${findEachOther(d, [h, a])}
     <div style="margin:18px 0;text-align:center">${r ? `<div class="display" style="font-size:42px;font-weight:700">${r.home_score} – ${r.away_score}</div>${r.home_pens != null ? `<div class="muted">Penalties ${r.home_pens}–${r.away_pens}</div>` : ''}${m.best_of > 1 ? `<div class="tiny dim">Best of ${m.best_of} (maps won)</div>` : ''}${r.detail ? `<div class="small muted" style="margin-top:8px">${esc(r.detail)}</div>` : ''}` : `<span class="badge ${m.status === 'ready' ? 'live' : 'draft'}">${m.status === 'ready' ? 'Up next' : m.status === 'bye' ? 'Bye' : 'Waiting for previous matches'}</span>`}</div>
     ${m.winner_id ? `<div class="champ"><span class="tro">${icon('trophy')}</span><div><div class="tiny dim">Winner</div><b>${esc(P.get(m.winner_id)?.name)}</b></div></div>` : ''}`);
 }
@@ -366,6 +391,7 @@ function openResultForm(d, m) {
   const quick = football ? [] : [...Array(need).keys()].flatMap(l => [[need, l], [l, need]]);
   openModal(`<div class="eyebrow">${esc(m.label)}${m.group_label ? ' · ' + esc(m.group_label) : ''}</div><h2>Enter result</h2>
     <div class="small dim">${football ? 'Goals scored.' + (ko ? ' If it ends level, add the penalty shoot-out.' : ' Draws are allowed in the league.') : `Best of ${m.best_of}: maps won (first to ${need}).`}</div>
+    ${findEachOther(d, [h, a])}
     <form class="form" id="rf">
       <div class="vs-entry">
         <div class="who"><div class="ellipsis">${esc(h.name)}</div><div class="stepper"><button type="button" data-st="hs" data-d="-1" aria-label="minus">−</button><input class="input num" name="home_score" inputmode="numeric" value="${r.home_score ?? 0}" aria-label="${esc(h.name)} score"><button type="button" data-st="hs" data-d="1" aria-label="plus">+</button></div></div>
@@ -438,11 +464,11 @@ route(/^\/leaderboard$/, async (_, q) => {
     const link = r => r.type === 'team' ? `#/team/${r.id}` : `#/p/${r.id}`;
     const pod = rows.slice(0, 3), order = [pod[1], pod[0], pod[2]], places = [2, 1, 3];
     const y = scrollY;
-    view(`<div class="row" style="margin:4px 2px 14px"><h1 style="font-size:26px">Leaderboard</h1><span class="tiny dim right">${S.live ? '<span class="ok-dot"></span>Updates live' : ''}</span></div>
+    view(`<div class="row" style="margin:4px 2px 14px"><h1 style="font-size:26px">Leaderboard</h1><span class="tiny dim right">${S.live ? '<span class="ok-dot"></span>Live' : ''}</span><a class="btn sm" href="#/players">${icon('search')}Find player</a></div>
       <div class="chips"><button class="chip ${g === 'overall' ? 'on' : ''}" data-g="overall">✦ Overall gamz</button>${S.games.map(x => `<button class="chip g-${x.id} ${g === x.id ? 'on' : ''}" data-g="${x.id}"><span class="dot"></span>${esc(x.short_name)}</button>`).join('')}</div>
       ${rows.length >= 3 ? `<div class="podium" style="margin-top:14px">${order.map((r, i) => `<a class="pod p${places[i]}" href="${link(r)}"><span class="place">#${places[i]}</span>${avatar(r.name, r.avatar_hue, r.type === 'team', places[i] === 1 ? 'lg' : '')}<div class="nm ellipsis">${esc(r.name)}</div><div class="pts num">${val(r)}</div></a>`).join('')}</div>` : ''}
       <div class="card pad-0" style="margin-top:14px">${rows.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>#</th><th class="l">${g === 'overall' ? 'Player' : 'Player / team'}</th>${c.map(x => `<th>${x[0]}</th>`).join('')}</tr></thead><tbody>
-        ${rows.map(r => `<tr class="${r.rank <= 3 ? 'top' : ''} ${changed.has(r.key) ? 'flash' : ''}"><td><span class="rank r${r.rank}">${r.rank}</span></td><td class="name"><a href="${link(r)}">${avatar(r.name, r.avatar_hue, r.type === 'team')}<span class="ellipsis">${esc(r.name)}</span>${r.move > 0 ? `<span class="mv up" title="Up ${r.move}">▲${r.move}</span>` : r.move < 0 ? `<span class="mv down" title="Down ${-r.move}">▼${-r.move}</span>` : ''}</a></td>${c.map(x => `<td class="${x[2] || ''}">${esc(x[1](r))}</td>`).join('')}</tr>`).join('')}
+        ${rows.map(r => `<tr class="${r.rank <= 3 ? 'top' : ''} ${changed.has(r.key) ? 'flash' : ''}"><td><span class="rank r${r.rank}">${r.rank}</span></td><td class="name"><a href="${link(r)}">${avatar(r.name, r.avatar_hue, r.type === 'team')}<span class="nmwrap"><span class="ellipsis">${esc(r.name)}</span>${gzMini(r.gamz_id)}</span>${r.move > 0 ? `<span class="mv up" title="Up ${r.move}">▲${r.move}</span>` : r.move < 0 ? `<span class="mv down" title="Down ${-r.move}">▼${-r.move}</span>` : ''}</a></td>${c.map(x => `<td class="${x[2] || ''}">${esc(x[1](r))}</td>`).join('')}</tr>`).join('')}
       </tbody></table></div>` : empty('No results yet for this game.')}</div>
       <details class="explain" style="margin-top:14px"><summary>How points are calculated</summary>
         ${g === 'overall' ? `<ul><li><b>gamz points</b> = tournament placement points + 2 per match win + 1 per draw + 2 per BR chicken dinner.</li><li>Placement points (completed tournaments): 1st 100 · 2nd 70 · 3rd 50 · 4th 40 · 5–8th 25 · 9–16th 15 · others 10.</li><li>Team results count for every player on the team. Ties: titles, then wins.</li></ul>`
@@ -468,6 +494,7 @@ const shuffleArr = a => { a = [...a]; for (let i = a.length - 1; i > 0; i--) { c
 route(/^\/pairing$/, async (_, q) => {
   const ts = (await api('/api/tournaments')).filter(t => t.format !== 'br_points' && t.participant_count >= 2);
   let src = q.t || '', names = q.demo ? 'KmerViper\nWouriGhost\nMboaNova\nSanagaBlaze\nKribiWave\nBueaFrost\nLimbeLynx' : '', result = [], detail = null;
+  const pairId = x => src && x ? (x.members ? `<span class="pid tiny dim">${x.members.filter(m => m.in_game_id).length}/${x.members.length} IDs linked</span>` : x.in_game_id ? `<span class="pid">${x.in_game_name ? `<span class="ellipsis">${esc(x.in_game_name)}</span>` : ''}<span class="num" data-copy="${esc(x.in_game_id)}" role="button" title="Copy">${esc(x.in_game_id)}</span></span>` : '<span class="pid missing">no ID</span>') : '';
   const draw = () => {
     const t = detail && detail.tournament, generated = detail && detail.matches.length > 0;
     view(`<div class="row" style="margin:4px 2px 6px"><h1 style="font-size:26px">Random pairing</h1></div>
@@ -477,12 +504,12 @@ route(/^\/pairing$/, async (_, q) => {
         ${src ? `<div class="small muted">${detail ? plural(detail.participants.length, isTeamMode(t) ? 'team' : 'player') + ' registered.' : ''}${generated ? ' <b>Bracket already drawn</b> — this shuffle is just for fun.' : ''}</div>` : `<label class="field">Names <span class="hint">one per line</span><textarea class="input" id="names" placeholder="KmerViper&#10;WouriGhost&#10;MboaNova&#10;SanagaBlaze">${esc(names)}</textarea></label>`}
         <button class="btn primary block" id="go">${icon('shuffle')}Shuffle & pair</button>
       </div></div>
-      <div style="margin-top:16px">${result.length ? `<div class="section-title" style="margin-top:0"><h2>Draw</h2><span class="tiny dim">${plural(result.length, 'match')}</span></div><div class="pair-list">${result.map((p, i) => `<div class="card pair" style="animation-delay:${i * 60}ms"><span class="n">${i + 1}</span><span class="a ellipsis">${esc(p[0].name)}</span>${p[1] ? '<span class="v">VS</span>' : '<span></span>'}<span class="b ellipsis ${p[1] ? '' : 'bye'}">${p[1] ? esc(p[1].name) : 'bye → next round'}</span></div>`).join('')}</div>
+      <div style="margin-top:16px">${result.length ? `<div class="section-title" style="margin-top:0"><h2>Draw</h2><span class="tiny dim">${plural(result.length, 'match')}</span></div><div class="pair-list">${result.map((p, i) => `<div class="card pair" style="animation-delay:${i * 60}ms"><span class="n">${i + 1}</span><span class="a"><span class="ellipsis pn">${esc(p[0].name)}</span>${pairId(p[0])}</span>${p[1] ? '<span class="v">VS</span>' : '<span></span>'}<span class="b ${p[1] ? '' : 'bye'}">${p[1] ? `<span class="ellipsis pn">${esc(p[1].name)}</span>${pairId(p[1])}` : 'bye → next round'}</span></div>`).join('')}</div>
         ${src && isStaff() && !generated ? `<button class="btn primary block" id="use" style="margin-top:14px">${icon('trophy')}Use this draw for the bracket</button>` : ''}` : `<div class="card">${empty('Your pairings will appear here.', 'shuffle')}</div>`}</div>`);
     $('#src').onchange = async e => { src = e.target.value; result = []; detail = src ? await api('/api/tournaments/' + src) : null; setQuery({ t: src }); draw(); };
     const nm = $('#names'); if (nm) nm.oninput = e => { names = e.target.value; };
     $('#go').onclick = () => {
-      const list = src ? detail.participants.map(p => ({ id: p.id, name: p.name })) : [...new Set(names.split('\n').map(s => s.trim()).filter(Boolean))].map(n => ({ name: n }));
+      const list = src ? detail.participants.map(p => ({ id: p.id, name: p.name, in_game_id: p.in_game_id, in_game_name: p.in_game_name, members: p.members })) : [...new Set(names.split('\n').map(s => s.trim()).filter(Boolean))].map(n => ({ name: n }));
       if (list.length < 2) return toast('Add at least 2 names', true);
       result = drawPairs(shuffleArr(list)); draw();
     };
@@ -495,6 +522,45 @@ route(/^\/pairing$/, async (_, q) => {
   draw();
   if (q.demo) $('#go').click();
 }, 'pairing');
+
+/* ===================== GAME IDS ===================== */
+function gameIdsCard(ids, { editable = false, showAll = editable } = {}) {
+  const by = new Map(ids.map(x => [x.game_id, x])), gs = S.games.filter(g => showAll || by.has(g.id));
+  if (!gs.length) return `<div class="card">${empty('No in-game IDs linked yet.', 'idcard')}</div>`;
+  return `<div class="card pad-0 list gid-list">${gs.map(g => { const x = by.get(g.id); return `<div class="list-row g-${g.id}"><span class="gid-ic">${icon(g.id)}</span><div class="grow" style="min-width:0"><div class="tiny dim">${esc(g.id_label)}</div>${x ? `<div class="gid-val">${igLine(x, true)}</div>` : '<div class="small dim">Not linked yet</div>'}</div>${editable ? `<button class="btn sm ${x ? 'ghost' : ''}" data-gid-edit="${g.id}">${x ? icon('edit') + 'Edit' : icon('plus') + 'Add'}</button>` : ''}</div>`; }).join('')}</div>`;
+}
+// base = '/api/me/game-ids' or '/api/players/:id/game-ids'
+function openGameIdForm(gid, x, base, done) {
+  const g = game(gid);
+  openModal(`<div class="eyebrow">${esc(g.name)}</div><h2>${x ? 'Edit' : 'Add'} ${esc(g.id_label)}</h2><div class="small dim">${esc(g.id_hint || '')}</div>
+    <form class="form" id="gidf" style="margin-top:12px"><label class="field">${esc(g.id_label)}<input class="input num" name="in_game_id" required minlength="3" maxlength="40" autocapitalize="none" autocomplete="off" value="${esc(x?.in_game_id || '')}"></label>
+    <label class="field">In-game name <span class="hint">(optional — the name opponents see)</span><input class="input" name="in_game_name" maxlength="32" value="${esc(x?.in_game_name || '')}"></label>
+    <div id="giderr"></div><button class="btn primary block">Save</button>${x ? '<button class="btn ghost block" type="button" id="gidrm">Remove this ID</button>' : ''}</form>`, r => {
+    $('#gidf', r).onsubmit = async e => { e.preventDefault(); try { await api(`${base}/${gid}`, { method: 'PUT', body: Object.fromEntries(new FormData(e.target)) }); closeModal(); toast(g.id_label + ' saved'); done(); } catch (er) { $('#giderr', r).innerHTML = errBox(er.message); } };
+    const rm = $('#gidrm', r); if (rm) rm.onclick = async () => { if (!confirm(`Remove your ${g.id_label}? You won't be able to register for ${g.short_name} tournaments until you add one.`)) return; await api(`${base}/${gid}`, { method: 'DELETE' }); closeModal(); toast('Removed'); done(); };
+  });
+}
+const wireGameIds = (ids, base, done) => $$('[data-gid-edit]').forEach(b => b.onclick = () => openGameIdForm(b.dataset.gidEdit, ids.find(x => x.game_id === b.dataset.gidEdit), base, done));
+// Search results (players page + organizer desk)
+function searchResults(r, q) {
+  if (!q || q.length < 2) return '';
+  if (!r.players.length && !r.teams.length) return `<div class="card">${empty('No player or team matches “' + esc(q) + '”.', 'search')}</div>`;
+  return `<div class="card pad-0 list">${r.players.map(p => `<a class="list-row" href="#/p/${p.id}">${avatar(p.gamer_tag, p.avatar_hue)}<div class="grow" style="min-width:0"><div class="row" style="gap:8px"><span class="ellipsis" style="font-weight:600">${esc(p.gamer_tag)}</span>${gzMini(p.gamz_id)}</div><div class="tiny dim">matched by ${esc(p.matched)}</div>${p.game_ids.length ? `<div class="mem-ids">${p.game_ids.map(x => `<span class="mem-id g-${esc(x.game_id)}"><b>${esc(x.game_short)}</b> <span class="num">${esc(x.in_game_id)}</span></span>`).join('')}</div>` : ''}</div></a>`).join('')}
+    ${r.teams.map(t => `<a class="list-row" href="#/team/${t.id}">${avatar(t.name, 250, true)}<div class="grow"><div style="font-weight:600" class="ellipsis">${esc(t.name)}</div><div class="tiny dim">Team${t.game_id ? ' · ' + esc(game(t.game_id).short_name) : ''}</div></div></a>`).join('')}</div>`;
+}
+function wireSearch(input, out, onQ) {
+  let tm = null, seq = 0;
+  const go = async () => { const q = input.value.trim(), n = ++seq; onQ && onQ(q); if (q.length < 2) { out.innerHTML = ''; return; } const r = await api('/api/search?q=' + encodeURIComponent(q)); if (n === seq) out.innerHTML = searchResults(r, q); };
+  input.oninput = () => { clearTimeout(tm); tm = setTimeout(go, 180); };
+  if (input.value) go();
+}
+route(/^\/players$/, async (_, q) => {
+  view(`<div class="row" style="margin:4px 2px 6px"><h1 style="font-size:26px">Find a player</h1></div>
+    <p class="muted small" style="margin:0 2px 14px">Search by gamer tag, <b>gamz ID</b> (e.g. GMZ-7K3Q9P) or any in-game ID / name.</p>
+    <div class="card"><label class="search-box">${icon('search')}<input class="input" id="sq" type="search" placeholder="GMZ-…, gamer tag or in-game ID" autocapitalize="none" autocomplete="off" value="${esc(q.q || '')}"></label></div>
+    <div id="sres" style="margin-top:12px"></div>`);
+  wireSearch($('#sq'), $('#sres'), v => setQuery({ q: v }));
+}, 'leaderboard');
 
 /* ===================== PROFILES ===================== */
 function historyList(h) {
@@ -512,19 +578,22 @@ route(/^\/p\/(\d+)$/, async ([id]) => {
   const draw = async () => {
     const d = await api('/api/players/' + id), p = d.player, o = d.overall;
     view(`<section class="card hero" style="padding:22px 18px"><div class="row" style="gap:14px">${avatar(p.gamer_tag, p.avatar_hue, false, 'lg')}<div class="grow"><div class="eyebrow">Player${p.is_example ? ' · example' : ''}</div><h1 style="font-size:26px;margin:2px 0" class="ellipsis">${esc(p.gamer_tag)}</h1><div class="small muted">${esc(p.real_name ? p.real_name + ' · ' : '')}${esc(p.country || '')}${p.account ? ' · ✓ gamz account' : ''}</div></div></div>
+      <div style="margin-top:12px">${gzChip(p.gamz_id)}</div>
       ${p.bio ? `<p style="margin:14px 0 0">${esc(p.bio)}</p>` : ''}
       <div class="stats"><div class="stat"><b>${o ? '#' + o.rank : '–'}</b><span>gamz rank</span></div><div class="stat"><b>${o ? o.points : 0}</b><span>Points</span></div><div class="stat"><b>${o ? o.titles : 0}</b><span>Titles</span></div><div class="stat"><b>${o ? o.wins : 0}</b><span>Wins</span></div></div></section>
       ${d.teams.length ? `<div class="section-title"><h2>Teams</h2></div><div class="chips">${d.teams.map(t => `<a class="chip ${t.game_id ? 'g-' + esc(t.game_id) : ''}" href="#/team/${t.id}"><span class="dot"></span>${esc(t.name)}${t.role === 'captain' ? ' · ★' : ''}</a>`).join('')}</div>` : ''}
+      <div class="section-title"><h2>Game IDs</h2>${isStaff() ? '<span class="tiny dim">organizer: tap to edit</span>' : ''}</div>${gameIdsCard(d.game_ids, { editable: isStaff() })}
       <div class="section-title"><h2>Per game</h2></div>${statCards(d.per_game)}
       <div class="cols"><div><div class="section-title"><h2>Tournaments</h2></div>${historyList(d.history)}</div><div><div class="section-title"><h2>Recent matches</h2></div>${recentList(d.recent)}</div></div>`);
+    if (isStaff()) wireGameIds(d.game_ids, `/api/players/${id}/game-ids`, draw);
   };
-  await draw(); return { onUpdate: draw };
+  await draw(); return { onUpdate: () => { if ($('#modal').hidden) draw(); } };
 }, 'leaderboard');
 route(/^\/team\/(\d+)$/, async ([id]) => {
   const draw = async () => {
     const d = await api('/api/teams/' + id), t = d.team;
     view(`<section class="card hero ${t.game_id ? 'g-' + esc(t.game_id) : ''}" style="padding:22px 18px"><div class="row" style="gap:14px">${avatar(t.name, 250, true, 'lg')}<div class="grow"><div class="eyebrow">Team${t.is_example ? ' · example' : ''}</div><h1 style="font-size:26px;margin:2px 0" class="ellipsis">${esc(t.name)}</h1><div class="small">${t.game_id ? gameTag(t.game_id) : ''} ${t.tag ? `<span class="dim">[${esc(t.tag)}]</span>` : ''}</div></div></div></section>
-      <div class="section-title"><h2>Roster</h2></div><div class="card pad-0 list">${d.members.length ? d.members.map(m => `<a class="list-row" href="#/p/${m.id}">${avatar(m.gamer_tag, m.avatar_hue)}<div class="grow" style="font-weight:600">${esc(m.gamer_tag)}</div><span class="badge">${m.role === 'captain' ? '★ Captain' : esc(m.role)}</span></a>`).join('') : empty('No members listed.')}</div>
+      <div class="section-title"><h2>Roster</h2></div><div class="card pad-0 list">${d.members.length ? d.members.map(m => `<a class="list-row" href="#/p/${m.id}">${avatar(m.gamer_tag, m.avatar_hue)}<div class="grow" style="min-width:0"><div class="row" style="gap:8px"><span class="ellipsis" style="font-weight:600">${esc(m.gamer_tag)}</span>${gzMini(m.gamz_id)}</div>${t.game_id ? `<div class="tiny">${m.in_game_id ? igLine(m, true) : noId(t.game_id)}</div>` : ''}</div><span class="badge">${m.role === 'captain' ? '★ Captain' : esc(m.role)}</span></a>`).join('') : empty('No members listed.')}</div>
       <div class="section-title"><h2>Per game</h2></div>${statCards(d.per_game)}
       <div class="cols"><div><div class="section-title"><h2>Tournaments</h2></div>${historyList(d.history)}</div><div><div class="section-title"><h2>Recent matches</h2></div>${recentList(d.recent)}</div></div>`);
   };
@@ -551,15 +620,18 @@ route(/^\/(me|login)$/, async () => {
     $('#lf').onsubmit = async e => { e.preventDefault(); try { await api('/api/login', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) }); await refreshMe(); toast('Logged in as ' + S.me.username); if (isStaff()) location.hash = '#/admin'; else render(); } catch (er) { $('#lerr').innerHTML = errBox(er.message); } };
     return;
   }
-  const pl = S.me.player_id ? (await api('/api/players/' + S.me.player_id)).player : null;
+  const pd = S.me.player_id ? await api('/api/players/' + S.me.player_id) : null, pl = pd && pd.player;
   view(`<div class="stack">
     <section class="card hero" style="padding:22px 18px"><div class="row" style="gap:14px">${avatar(pl ? pl.gamer_tag : S.me.username, pl ? pl.avatar_hue : 265, false, 'lg')}<div class="grow"><div class="eyebrow">${esc({ admin: 'Admin', organizer: 'Organizer', player: 'Player' }[S.me.role])} account</div><h1 style="font-size:24px;margin:2px 0" class="ellipsis">${esc(pl ? pl.gamer_tag : S.me.username)}</h1><div class="small muted">@${esc(S.me.username)}</div></div></div>
+      ${pl ? `<div style="margin-top:12px">${gzChip(pl.gamz_id)}</div><div class="tiny dim" style="margin-top:6px">Your permanent gamz ID — share it so organizers and opponents can find you.</div>` : ''}
       <div class="row wrap" style="margin-top:16px">${pl ? `<a class="btn sm" href="#/p/${pl.id}">${icon('user')}Public profile</a>` : ''}${isStaff() ? `<a class="btn sm" href="#/admin">${icon('shield')}Admin</a>` : ''}${S.me.role === 'admin' ? `<a class="btn sm" href="#/system">${icon('cpu')}System</a>` : ''}<button class="btn sm ghost" id="logout">Log out</button></div></section>
+    ${pl ? `<div><div class="section-title" style="margin-top:4px"><h2>My game IDs</h2><span class="tiny dim">needed to register</span></div>${gameIdsCard(pd.game_ids, { editable: true })}</div>` : ''}
     ${settingsCard()}
     ${pl ? `<div class="card"><h3 style="font-size:15px;margin-bottom:12px">Edit profile</h3><form class="form" id="pf"><label class="field">Gamer tag<input class="input" name="gamer_tag" value="${esc(pl.gamer_tag)}" required></label><label class="field">Real name <span class="hint">(optional, public)</span><input class="input" name="real_name" value="${esc(pl.real_name || '')}"></label><label class="field">Bio<textarea class="input" name="bio" maxlength="280">${esc(pl.bio || '')}</textarea></label><div id="perr"></div><button class="btn primary">Save profile</button></form></div>` : ''}
     ${S.me.role !== 'admin' ? `<div class="card"><h3 style="font-size:15px;margin-bottom:12px">Change password</h3><form class="form" id="cpf"><label class="field">Current password<input class="input" type="password" name="current_password" autocomplete="current-password" required></label><label class="field">New password<input class="input" type="password" name="new_password" minlength="8" autocomplete="new-password" required></label><div id="cperr"></div><button class="btn">Update password</button></form></div>` : `<div class="notice">The admin password is set with the <b>&nbsp;ADMIN_PASSWORD&nbsp;</b> environment variable (Render → Environment).</div>`}
   </div>`);
   $('#logout').onclick = async () => { await api('/api/logout', { method: 'POST' }); await refreshMe(); toast('Logged out'); render(); };
+  if (pd) wireGameIds(pd.game_ids, '/api/me/game-ids', () => render());
   const pf = $('#pf'); if (pf) pf.onsubmit = async e => { e.preventDefault(); try { await api('/api/me', { method: 'PUT', body: Object.fromEntries(new FormData(pf)) }); toast('Profile saved'); } catch (er) { $('#perr').innerHTML = errBox(er.message); } };
   const cp = $('#cpf'); if (cp) cp.onsubmit = async e => { e.preventDefault(); try { await api('/api/me', { method: 'PUT', body: Object.fromEntries(new FormData(cp)) }); cp.reset(); toast('Password updated'); } catch (er) { $('#cperr').innerHTML = errBox(er.message); } };
 }, 'me');
@@ -567,9 +639,15 @@ route(/^\/signup$/, async () => {
   await refreshMe();
   if (S.me) { location.hash = '#/me'; return; }
   view(`<div class="stack"><section class="card hero" style="padding:24px 18px"><div class="eyebrow">Join the community</div><h1 style="font-size:28px">Create your <span>gamz</span> profile</h1><p>Claim your gamer tag. If an organizer already added you to a tournament, use the exact same tag and your results link up.</p>
-    ${S.signup ? `<form class="form" id="sf"><label class="field">Gamer tag<input class="input" name="gamer_tag" required maxlength="24" placeholder="e.g. KmerViper"></label><label class="field">Username <span class="hint">for logging in</span><input class="input" name="username" autocapitalize="none" autocomplete="username" required></label><label class="field">Password <span class="hint">at least 8 characters</span><input class="input" type="password" name="password" minlength="8" autocomplete="new-password" required></label><div id="serr"></div><button class="btn primary block">Create account</button></form>` : '<div class="notice">Sign-up is currently closed. Ask an organizer.</div>'}
+    ${S.signup ? `<form class="form" id="sf"><label class="field">Gamer tag<input class="input" name="gamer_tag" required maxlength="24" placeholder="e.g. KmerViper"></label><label class="field">Username <span class="hint">for logging in</span><input class="input" name="username" autocapitalize="none" autocomplete="username" required></label><label class="field">Password <span class="hint">at least 8 characters</span><input class="input" type="password" name="password" minlength="8" autocomplete="new-password" required></label>
+      <div class="sub-card"><div class="row"><span style="width:18px;color:var(--purple)">${icon('idcard')}</span><b class="small">Link a game ID</b><span class="hint right">optional · add more later</span></div>
+        <label class="field">Game<select class="input" name="game_id">${S.games.map(g => `<option value="${g.id}">${esc(g.name)}</option>`).join('')}</select></label>
+        <label class="field"><span id="sgl">${esc(S.games[0]?.id_label || 'In-game ID')}</span><input class="input num" name="in_game_id" maxlength="40" autocapitalize="none" autocomplete="off" placeholder="e.g. 1234-567-890"></label><div class="tiny dim" id="sgh" style="margin-top:-4px">${esc(S.games[0]?.id_hint || '')}</div>
+        <label class="field">In-game name<input class="input" name="in_game_name" maxlength="32" placeholder="the name opponents see"></label></div>
+      <p class="tiny dim" style="margin:0">You'll get a permanent gamz ID like <b class="num">GMZ-7K3Q9P</b>. Tournaments require the in-game ID for their game.</p><div id="serr"></div><button class="btn primary block">Create account</button></form>` : '<div class="notice">Sign-up is currently closed. Ask an organizer.</div>'}
     <p class="small" style="margin:14px 0 0;text-align:center">Already have an account? <a href="#/me" style="color:var(--purple);font-weight:600">Log in</a></p></section>${settingsCard()}</div>`);
-  const f = $('#sf'); if (f) f.onsubmit = async e => { e.preventDefault(); try { const b = Object.fromEntries(new FormData(f)); await api('/api/signup', { method: 'POST', body: b }); await api('/api/me', { method: 'PUT', body: { theme: currentTheme() } }).catch(() => {}); await refreshMe(); toast('Welcome to gamz, ' + b.gamer_tag + '!'); location.hash = '#/me'; } catch (er) { $('#serr').innerHTML = errBox(er.message); } };
+  const f = $('#sf'); if (f) f.game_id.onchange = () => { const g = game(f.game_id.value); $('#sgl').textContent = g.id_label; $('#sgh').textContent = g.id_hint || ''; };
+  if (f) f.onsubmit = async e => { e.preventDefault(); try { const b = Object.fromEntries(new FormData(f)); if (!b.in_game_id.trim()) { delete b.game_id; delete b.in_game_id; delete b.in_game_name; } await api('/api/signup', { method: 'POST', body: b }); await api('/api/me', { method: 'PUT', body: { theme: currentTheme() } }).catch(() => {}); await refreshMe(); toast('Welcome to gamz, ' + b.gamer_tag + '!'); location.hash = '#/me'; } catch (er) { $('#serr').innerHTML = errBox(er.message); } };
 }, 'me');
 
 /* ===================== ADMIN ===================== */
@@ -609,13 +687,15 @@ function wireTournamentForm(root, t, done) {
 }
 route(/^\/admin$/, async (_, q) => {
   await refreshMe(); needStaff();
-  let openNew = !!q.new;
+  let openNew = !!q.new, deskQ = q.q || '';
   const draw = async () => {
     const [ts, players, teams, users] = await Promise.all([api('/api/tournaments'), api('/api/players'), api('/api/teams'), S.me.role === 'admin' ? api('/api/users') : Promise.resolve(null)]);
     const open = ts.filter(t => t.status !== 'completed'), done = ts.filter(t => t.status === 'completed');
     const toPlay = open.reduce((s, t) => s + (t.matches_total - t.matches_done), 0);
     view(`<div class="row" style="margin:4px 2px 14px"><div><div class="eyebrow">${esc(S.me.role)} · @${esc(S.me.username)}</div><h1 style="font-size:26px">Organizer desk</h1></div><button class="btn sm primary right" id="newT">${icon('plus')}New</button></div>
       <div class="kpis"><div class="kpi"><span>Active events</span><b>${open.length}</b></div><div class="kpi"><span>Matches left</span><b>${toPlay}</b></div><div class="kpi"><span>Players</span><b>${players.length}</b></div><div class="kpi"><span>Teams</span><b>${teams.length}</b></div></div>
+      <div class="section-title"><h2>Find a player</h2><span class="tiny dim">gamz ID or any in-game ID</span></div>
+      <div class="card"><label class="search-box">${icon('search')}<input class="input" id="dq" type="search" placeholder="GMZ-…, gamer tag, in-game ID or name" autocapitalize="none" autocomplete="off" value="${esc(deskQ)}"></label></div><div id="dres" style="margin-top:10px"></div>
       <div class="section-title"><h2>Active tournaments</h2></div>
       <div class="card pad-0 list">${open.length ? open.map(t => `<a class="list-row g-${t.game_id}" href="#/admin/t/${t.id}"><div class="grow"><div class="ellipsis" style="font-weight:600">${esc(t.name)}</div><div class="tiny">${gameTag(t.game_id)} <span class="dim">· ${t.participant_count} entrants · ${t.matches_done}/${t.matches_total} done</span></div></div>${badge(t.status)}</a>`).join('') : empty('No active tournaments.')}</div>
       ${done.length ? `<div class="section-title"><h2>Completed</h2></div><div class="card pad-0 list">${done.map(t => `<a class="list-row" href="#/admin/t/${t.id}"><div class="grow"><div class="ellipsis" style="font-weight:600">${esc(t.name)}</div><div class="tiny">${gameTag(t.game_id)} <span class="dim">· 🏆 ${esc(t.champion || '')}</span></div></div>${badge(t.status)}</a>`).join('')}</div>` : ''}
@@ -629,6 +709,7 @@ route(/^\/admin$/, async (_, q) => {
         <div class="card pad-0 list">${users.filter(u => u.role !== 'player').map(u => `<div class="list-row">${avatar(u.username, 270)}<div class="grow"><div style="font-weight:600">${esc(u.username)}</div><div class="tiny dim">${esc(u.role)}</div></div>${u.role === 'organizer' ? `<button class="btn sm ghost" data-deluser="${u.id}">Remove</button>` : ''}</div>`).join('')}</div>
         <div class="card" style="margin-top:10px"><form class="form" id="auf"><div class="two"><input class="input" name="username" placeholder="username" autocapitalize="none" required><input class="input" name="password" type="password" placeholder="password (8+)" minlength="8" required autocomplete="new-password"></div><button class="btn">${icon('plus')}Add organizer</button></form></div>
         <p class="tiny dim" style="margin:8px 4px">${plural(users.filter(u => u.role === 'player').length, 'player account')} signed up.</p>` : ''}`);
+    wireSearch($('#dq'), $('#dres'), v => { deskQ = v; setQuery({ q: v }); });
     $('#newT').onclick = () => openModal(`<h2>New tournament</h2>${tournamentForm()}`, r => wireTournamentForm(r, {}, t => { location.hash = '#/admin/t/' + t.id; }));
     $('#apf').onsubmit = async e => { e.preventDefault(); try { await api('/api/players', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) }); toast('Player added'); draw(); } catch (er) { toast(er.message, true); } };
     $('#newTeam').onclick = () => openModal(`<h2>New team</h2><form class="form" id="ntf"><label class="field">Team name<input class="input" name="name" required></label><div class="two"><label class="field">Tag<input class="input" name="tag" maxlength="6" placeholder="e.g. MBV"></label><label class="field">Game<select class="input" name="game_id">${S.games.filter(g => g.family !== 'football').map(g => `<option value="${g.id}">${esc(g.short_name)}</option>`).join('')}</select></label></div>
@@ -642,7 +723,7 @@ route(/^\/admin$/, async (_, q) => {
     if (openNew) { openNew = false; $('#newT').click(); }
   };
   await draw();
-  return { onUpdate: () => { if ($('#modal').hidden) draw(); } };
+  return { onUpdate: () => { if ($('#modal').hidden && document.activeElement?.id !== 'dq') draw(); } };
 }, 'admin');
 
 route(/^\/admin\/t\/(\d+)$/, async ([id]) => {
@@ -659,8 +740,11 @@ route(/^\/admin\/t\/(\d+)$/, async ([id]) => {
         <div class="row wrap" style="margin-top:14px"><button class="btn sm" id="editT">${icon('edit')}Edit details</button>${generated ? '<button class="btn sm ghost" id="resetB">Reset bracket</button>' : '<button class="btn sm ghost" id="delT">Delete</button>'}</div></section>
       ${!generated ? `
         <div class="section-title"><h2>Registration</h2><span class="tiny dim">${plural(d.participants.length, isTeamMode(t) ? 'team' : 'player')}</span></div>
-        <div class="card"><form class="form" id="regf"><label class="field">Add existing ${isTeamMode(t) ? 'team' : 'player'}<select class="input" name="pick"><option value="">Choose…</option>${pool.filter(x => !inIds.has(x.id)).map(x => `<option value="${x.id}">${esc(x.gamer_tag || x.name)}</option>`).join('')}</select></label><label class="field">…or quick-add a new one<input class="input" name="new_name" placeholder="${isTeamMode(t) ? 'Team name' : 'Gamer tag'}"></label><button class="btn">${icon('plus')}Register</button></form></div>
-        <div class="card pad-0" style="margin-top:10px">${d.participants.length ? d.participants.map((p, i) => `<div class="seed-row"><span class="s">${i + 1}</span>${avatar(p.name, p.avatar_hue, !!p.team_id)}<span class="grow ellipsis" style="font-weight:600">${esc(p.name)}</span><button class="mini-btn" data-mv="${i}" data-d="-1" aria-label="Move up">${icon('up')}</button><button class="mini-btn" data-mv="${i}" data-d="1" aria-label="Move down">${icon('down')}</button><button class="mini-btn" data-rm="${p.id}" aria-label="Remove">${icon('x')}</button></div>`).join('') : empty('Nobody registered yet.')}</div>
+        <div class="card"><form class="form" id="regf"><label class="field">Add existing ${isTeamMode(t) ? 'team' : 'player'}<select class="input" name="pick"><option value="">Choose…</option>${pool.filter(x => !inIds.has(x.id)).map(x => `<option value="${x.id}">${esc(x.gamer_tag || x.name)}${x.gamz_id ? ' · ' + esc(x.gamz_id) : ''}${isTeamMode(t) ? (x.game_id === t.game_id && x.members_missing_id ? ` · ⚠ ${x.members_missing_id} missing ID` : '') : (String(x.linked_games || '').split(',').includes(t.game_id) ? '' : ' · ⚠ no ID')}</option>`).join('')}</select></label>
+          <label class="field">…or quick-add a new one<input class="input" name="new_name" placeholder="${isTeamMode(t) ? 'Team name' : 'Gamer tag'}"></label>
+          ${isTeamMode(t) ? '' : `<div class="two"><label class="field">${esc(idLabel(t.game_id))}<input class="input num" name="in_game_id" maxlength="40" autocapitalize="none" autocomplete="off" placeholder="required"></label><label class="field">In-game name<input class="input" name="in_game_name" maxlength="32" placeholder="optional"></label></div><div class="tiny dim" style="margin-top:-4px">${esc(game(t.game_id).id_hint || '')} Also links the ID for an existing player picked above.</div>`}
+          <button class="btn">${icon('plus')}Register</button></form></div>
+        <div class="card pad-0" style="margin-top:10px">${d.participants.length ? d.participants.map((p, i) => `<div class="seed-row"><span class="s">${i + 1}</span>${avatar(p.name, p.avatar_hue, !!p.team_id)}<span class="grow" style="min-width:0"><span class="ellipsis" style="font-weight:600;display:block">${esc(p.name)}</span><span class="tiny">${p.team_id ? `<span class="dim">${(p.members || []).filter(m => m.in_game_id).length}/${(p.members || []).length} members have a ${esc(idLabel(t.game_id))}</span>` : p.in_game_id ? igLine(p) : noId(t.game_id)}</span></span><button class="mini-btn" data-mv="${i}" data-d="-1" aria-label="Move up">${icon('up')}</button><button class="mini-btn" data-mv="${i}" data-d="1" aria-label="Move down">${icon('down')}</button><button class="mini-btn" data-rm="${p.id}" aria-label="Remove">${icon('x')}</button></div>`).join('') : empty('Nobody registered yet.')}</div>
         <p class="tiny dim" style="margin:8px 4px">Order = seeding (1 is strongest). When the count isn't a power of 2, top seeds get byes.</p>
         <div class="row wrap"><button class="btn primary grow" id="gen">${icon('trophy')}${t.format === 'br_points' ? 'Create match schedule' : t.format.startsWith('league') ? 'Generate fixtures' : 'Generate seeded bracket'}</button>${t.format !== 'br_points' ? `<button class="btn grow" id="genR">${icon('shuffle')}Random draw</button>` : ''}</div>` : `
         ${leagueDone ? `<div class="card" style="margin-top:14px"><div class="row"><div class="grow"><b>Group stage complete</b><div class="tiny dim">Top ${t.advance_per_group} per group go through.</div></div><button class="btn primary" id="ko">Draw knockout</button></div></div>` : ''}
@@ -677,7 +761,17 @@ route(/^\/admin\/t\/(\d+)$/, async ([id]) => {
     on('#ko', async () => { try { await api(`/api/tournaments/${id}/knockout`, { method: 'POST' }); toast('Knockout drawn'); await load(); draw(); } catch (e) { toast(e.message, true); } });
     const gen = async pairing => { try { await api(`/api/tournaments/${id}/generate`, { method: 'POST', body: { pairing } }); toast('Generated — it is live!'); await load(); draw(); } catch (e) { toast(e.message, true); } };
     on('#gen', () => gen('seeded')); on('#genR', () => gen('random'));
-    const rf = $('#regf'); if (rf) rf.onsubmit = async e => { e.preventDefault(); const b = Object.fromEntries(new FormData(rf)); const body = b.new_name ? { new_name: b.new_name } : isTeamMode(t) ? { team_id: b.pick } : { player_id: b.pick }; try { await api(`/api/tournaments/${id}/participants`, { method: 'POST', body }); await load(); draw(); } catch (er) { toast(er.message, true); } };
+    const rf = $('#regf'); if (rf) rf.onsubmit = async e => {
+      e.preventDefault(); const b = Object.fromEntries(new FormData(rf));
+      const body = b.new_name ? { new_name: b.new_name } : isTeamMode(t) ? { team_id: b.pick } : { player_id: b.pick };
+      if (!isTeamMode(t) && b.in_game_id && b.in_game_id.trim()) Object.assign(body, { in_game_id: b.in_game_id, in_game_name: b.in_game_name });
+      const send = async override => { const r = await api(`/api/tournaments/${id}/participants`, { method: 'POST', body: override ? { ...body, override_id_check: true } : body }); if (r && r.warning) toast(r.warning, true); else toast('Registered'); await load(); draw(); };
+      try { await send(false); }
+      catch (er) {
+        if (er.data && er.data.code === 'missing_game_id') { if (confirm(`${er.message}.\n\nOpponents won't be able to find them in-game. Register anyway (organizer override)?`)) { try { await send(true); } catch (e2) { toast(e2.message, true); } } }
+        else toast(er.message, true);
+      }
+    };
     $$('[data-rm]').forEach(b => b.onclick = async () => { await api(`/api/tournaments/${id}/participants/${b.dataset.rm}`, { method: 'DELETE' }); await load(); draw(); });
     $$('[data-mv]').forEach(b => b.onclick = async () => { const ids = d.participants.map(p => p.id), i = +b.dataset.mv, j = i + +b.dataset.d; if (j < 0 || j >= ids.length) return; [ids[i], ids[j]] = [ids[j], ids[i]]; await api(`/api/tournaments/${id}/seeds`, { method: 'PUT', body: { order: ids } }); await load(); draw(); });
   };

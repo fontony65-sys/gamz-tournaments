@@ -1,5 +1,6 @@
 // Automated verification: bracket generation (byes), auto-advance, double elimination, football rules,
-// PUBG/BR points, league tables, leaderboard recompute, auth (sessions, roles, rate limit) and SSE live updates.
+// PUBG/BR points, league tables, leaderboard recompute, gamz IDs + in-game IDs (uniqueness, registration gate, search),
+// auth (sessions, roles, rate limit) and SSE live updates.
 // Uses throw-away local database files only. Run: npm run verify
 const os = require('os'), fs = require('fs'), path = require('path'), http = require('http'), { spawn } = require('child_process');
 const assert = require('assert/strict');
@@ -8,7 +9,7 @@ delete process.env.GAMZ_DATABASE_URL; delete process.env.GAMZ_DATABASE_TOKEN;
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'gamz-verify-'));
 process.env.GAMZ_LOCAL_DB_FILE = path.join(TMP, 'unit.db');
 const { open, migrate, IS_REMOTE } = require('../db');
-const E = require('../lib/engine'), B = require('../lib/bracket'), SC = require('../lib/scoring'), LB = require('../lib/leaderboard');
+const E = require('../lib/engine'), B = require('../lib/bracket'), SC = require('../lib/scoring'), LB = require('../lib/leaderboard'), IDS = require('../lib/ids');
 
 let pass = 0, fail = 0; const results = [];
 async function test(name, fn) {
@@ -22,7 +23,7 @@ async function mkTournament(o) {
   const k = Object.keys(o); const r = await db.run(`INSERT INTO tournaments (${k.join(',')}) VALUES (${k.map(() => '?').join(',')})`, ...k.map(x => o[x])); return r.lastInsertRowid;
 }
 let tagN = 0;
-async function players(n) { const ids = []; for (let i = 0; i < n; i++) ids.push((await db.run('INSERT INTO players (gamer_tag) VALUES (?)', 'P' + (++tagN))).lastInsertRowid); return ids; }
+async function players(n) { const ids = []; for (let i = 0; i < n; i++) ids.push((await IDS.createPlayer(db, { gamer_tag: 'P' + (++tagN) })).id); return ids; }
 async function teams(n) { const ids = []; for (let i = 0; i < n; i++) ids.push((await db.run('INSERT INTO teams (name) VALUES (?)', 'T' + (++tagN))).lastInsertRowid); return ids; }
 async function register(tid, ids, team = false) { let s = 1; for (const id of ids) await db.run(`INSERT INTO participants (tournament_id, ${team ? 'team_id' : 'player_id'}, seed) VALUES (?,?,?)`, tid, id, s++); return (await E.participantsOf(db, tid)).map(p => p.id); }
 const matches = tid => db.all('SELECT * FROM matches WHERE tournament_id=? ORDER BY id', tid);
@@ -195,6 +196,56 @@ async function playAll(tid, pick = m => (rnd() < 0.5 ? 'home' : 'away'), bo = 1)
     const [m] = await matches(t); await E.recordResult(db, m.id, { home_score: 1, away_score: 0 });
     const lb = await LB.compute(db); for (const id of [a1, a2]) assert.equal(lb.overall.find(r => r.id === id).titles >= 1, true); assert.equal(lb.overall.find(r => r.id === b1).titles, 0);
   });
+
+  console.log('gamz IDs & in-game IDs');
+  await test('gamz IDs: GMZ- + 6 chars from the unambiguous alphabet (no 0/O/1/I/L), 3000 generated are distinct', () => {
+    assert.equal(IDS.ALPHABET.length, 31); assert.ok(!/[01OIL]/.test(IDS.ALPHABET));
+    const seen = new Set(); for (let i = 0; i < 3000; i++) { const id = IDS.makeGamzId(); assert.match(id, IDS.GAMZ_ID_RE); seen.add(id); }
+    assert.equal(seen.size, 3000);
+  });
+  await test('every created player gets a unique gamz ID; a collision is detected and a fresh ID is drawn', async () => {
+    const [a] = await players(1), taken = (await db.get('SELECT gamz_id FROM players WHERE id=?', a)).gamz_id;
+    // rng that first replays the taken ID's characters, then yields "222222"
+    const seq = [...taken.slice(4)].map(c => IDS.ALPHABET.indexOf(c)); let k = 0; const rng = () => (k < seq.length ? seq[k++] : 0);
+    const b = await IDS.createPlayer(db, { gamer_tag: 'Collider' }, rng);
+    assert.equal(b.gamz_id, 'GMZ-222222'); assert.notEqual(b.gamz_id, taken);
+    await assert.rejects(db.run('INSERT INTO players (gamer_tag, gamz_id) VALUES (?,?)', 'Dup', taken), /UNIQUE/, 'unique index is the final guard');
+  });
+  await test('gamz IDs are immutable (DB trigger) and the migration backfills rows that had none', async () => {
+    const [a] = await players(1);
+    await assert.rejects(db.run("UPDATE players SET gamz_id='GMZ-333333' WHERE id=?", a), /immutable/);
+    for (const t of ['OldA', 'OldB', 'OldC']) await db.run('INSERT INTO players (gamer_tag) VALUES (?)', t); // legacy rows without an ID
+    assert.ok((await IDS.backfillGamzIds(db)) >= 3);
+    assert.equal((await db.get('SELECT COUNT(*) c FROM players WHERE gamz_id IS NULL')).c, 0);
+    const all = (await db.all('SELECT gamz_id FROM players')).map(r => r.gamz_id); assert.equal(new Set(all).size, all.length); all.forEach(x => assert.match(x, IDS.GAMZ_ID_RE));
+  });
+  await test('gamz ID search normalisation: gmz-7k3q9p, GMZ 7K3Q9P, 7k3q9p → GMZ-7K3Q9P; ambiguous chars rejected', () => {
+    for (const q of ['gmz-7k3q9p', 'GMZ 7K3Q9P', '7k3q9p', ' gmz7K3Q9P ']) assert.equal(IDS.normalizeGamzId(q), 'GMZ-7K3Q9P');
+    for (const q of ['GMZ-7K3Q9O', 'GMZ-7K3Q91', 'hello', 'GMZ-7K3']) assert.equal(IDS.normalizeGamzId(q), null);
+  });
+  await test('player_game_ids: one ID per player per game (upsert), an in-game ID belongs to one player per game (case-insensitive)', async () => {
+    const [a, b] = await players(2);
+    await IDS.setGameId(db, a, 'efootball', { in_game_id: 'ABC-123-456', in_game_name: 'Alpha' });
+    await assert.rejects(IDS.setGameId(db, b, 'efootball', { in_game_id: 'abc-123-456' }), /already linked to another gamz player/);
+    await IDS.setGameId(db, b, 'dls', { in_game_id: 'ABC-123-456' }); // same string in another game is fine
+    await IDS.setGameId(db, a, 'efootball', { in_game_id: 'NEW-999-000' }); // edit = replace
+    assert.deepEqual((await IDS.gameIdsOf(db, a)).map(x => [x.game_id, x.in_game_id]), [['efootball', 'NEW-999-000']]);
+    await assert.rejects(db.run("INSERT INTO player_game_ids (player_id, game_id, in_game_id) VALUES (?, 'efootball', 'X-1')", a), /UNIQUE/);
+    await assert.rejects(db.run("INSERT INTO player_game_ids (player_id, game_id, in_game_id) VALUES (?, 'dls', 'abc-123-456')", a), /UNIQUE/);
+    await assert.rejects(IDS.setGameId(db, a, 'pubgm', { in_game_id: 'x' }), /3–40/);
+    await IDS.removeGameId(db, a, 'efootball'); assert.equal((await IDS.gameIdsOf(db, a)).length, 0);
+  });
+  await test("participants carry the in-game ID for the tournament's game; team entrants list members with their IDs", async () => {
+    const [p1, p2] = await players(2); await IDS.setGameId(db, p1, 'dls', { in_game_id: 'DLS-P1', in_game_name: 'P1 FC' }); await IDS.setGameId(db, p1, 'codm', { in_game_id: 'CODM-P1' });
+    const t = await mkTournament({ game_id: 'dls', name: 'IDs', format: 'single_elim', mode: '1v1' }); await register(t, [p1, p2]);
+    const d = await E.loadTournament(db, t), x = d.participants.find(p => p.player_id === p1);
+    assert.equal(x.in_game_id, 'DLS-P1'); assert.equal(x.in_game_name, 'P1 FC'); assert.match(x.gamz_id, IDS.GAMZ_ID_RE);
+    assert.equal(d.participants.find(p => p.player_id === p2).in_game_id, null);
+    const [tm] = await teams(1); await db.run('INSERT INTO team_members (team_id, player_id, role) VALUES (?,?,?),(?,?,?)', tm, p1, 'captain', tm, p2, 'member');
+    const t2 = await mkTournament({ game_id: 'codm', name: 'IDs T', format: 'single_elim', mode: '5v5', best_of: 1 }); await register(t2, [tm], true);
+    const mem = (await E.loadTournament(db, t2)).participants[0].members;
+    assert.deepEqual(mem.map(m => [m.player_id, m.in_game_id]), [[p1, 'CODM-P1'], [p2, null]]);
+  });
   db.close();
 
   // ---------------- HTTP server: auth + SSE ----------------
@@ -243,7 +294,7 @@ async function playAll(tid, pick = m => (rnd() < 0.5 ? 'home' : 'away'), bo = 1)
     });
     await test('SSE: viewers receive an update event when a result is entered, and the leaderboard reflects it', async () => {
       const t = (await req('POST', '/api/tournaments', { game_id: 'efootball', name: 'SSE Cup', format: 'single_elim', mode: '1v1' }, admin)).body;
-      for (const n of ['SseA', 'SseB']) assert.equal((await req('POST', `/api/tournaments/${t.id}/participants`, { new_name: n }, admin)).status, 201);
+      for (const n of ['SseA', 'SseB']) assert.equal((await req('POST', `/api/tournaments/${t.id}/participants`, { new_name: n, in_game_id: n + '-0001' }, admin)).status, 201);
       const g = await req('POST', `/api/tournaments/${t.id}/generate`, {}, admin); assert.equal(g.status, 200);
       const m = g.body.matches[0];
       const events = []; let hello = false;
@@ -254,6 +305,61 @@ async function playAll(tid, pick = m => (rnd() < 0.5 ? 'home' : 'away'), bo = 1)
       sse.destroy();
       const ev = events.find(e => e.match_id === m.id); assert.ok(ev, 'update event received'); assert.equal(ev.kind, 'result'); assert.equal(ev.tournament_id, t.id);
       const lb = await req('GET', '/api/leaderboard?game=efootball'); assert.equal(lb.body.rows[0].name, 'SseA'); assert.equal(lb.body.rows[0].titles, 1);
+    });
+    let ana, anaId, anaGz;
+    await test('sign-up assigns a gamz ID and can link a first in-game ID; players add/edit/remove their own IDs', async () => {
+      const su = await req('POST', '/api/signup', { username: 'ana', password: 'ana-pass-123', gamer_tag: 'AnaStrike', game_id: 'efootball', in_game_id: '1111-222-333', in_game_name: 'Ana' });
+      assert.equal(su.status, 201); ana = su.cookie; anaId = su.body.user.player_id;
+      const p = (await req('GET', '/api/players/' + anaId)).body; anaGz = p.player.gamz_id;
+      assert.match(anaGz, /^GMZ-[2-9A-HJKMNP-Z]{6}$/); assert.deepEqual(p.game_ids.map(x => [x.game_id, x.in_game_id, x.in_game_name]), [['efootball', '1111-222-333', 'Ana']]);
+      assert.equal((await req('PUT', '/api/me/game-ids/codm', { in_game_id: '6700000000000001', in_game_name: 'Ana_CM' }, ana)).status, 200);
+      assert.equal((await req('PUT', '/api/me/game-ids/codm', { in_game_id: '6700000000000002' }, ana)).body.in_game_id, '6700000000000002');
+      assert.equal((await req('DELETE', '/api/me/game-ids/codm', null, ana)).body.game_ids.length, 1);
+      assert.equal((await req('PUT', '/api/me/game-ids/codm', { in_game_id: 'x' })).status, 401, 'login required');
+      assert.equal((await req('PUT', '/api/players/' + anaId + '/game-ids/dls', { in_game_id: 'DLS-ANA' }, ana)).status, 403, 'players cannot edit others via staff route');
+      const dup = await req('POST', '/api/signup', { username: 'ana2', password: 'ana-pass-123', gamer_tag: 'AnaClone', game_id: 'efootball', in_game_id: '1111-222-333' });
+      assert.equal(dup.status, 400); assert.match(dup.body.error, /eFootball User ID is already linked/);
+      assert.equal((await req('GET', '/api/players')).body.find(x => x.gamer_tag === 'AnaClone'), undefined, 'nothing created on a rejected sign-up');
+    });
+    await test('registration gate: a linked ID for the game is required (409); organizers can override with a warning', async () => {
+      const t = (await req('POST', '/api/tournaments', { game_id: 'dls', name: 'Gate Cup', format: 'single_elim', mode: '1v1' }, admin)).body;
+      const r1 = await req('POST', `/api/tournaments/${t.id}/participants`, { player_id: anaId }, admin);
+      assert.equal(r1.status, 409); assert.equal(r1.body.code, 'missing_game_id'); assert.match(r1.body.error, /Dream League Soccer Player ID/);
+      const r2 = await req('POST', `/api/tournaments/${t.id}/participants`, { player_id: anaId, override_id_check: true }, admin);
+      assert.equal(r2.status, 201); assert.match(r2.body.warning, /without a Dream League Soccer Player ID/);
+      // quick-add without an ID is refused and creates nothing; with an ID it creates + links
+      assert.equal((await req('POST', `/api/tournaments/${t.id}/participants`, { new_name: 'NoIdNewbie' }, admin)).status, 409);
+      assert.equal((await req('GET', '/api/players')).body.some(x => x.gamer_tag === 'NoIdNewbie'), false);
+      const q = await req('POST', `/api/tournaments/${t.id}/participants`, { new_name: 'QuickDls', in_game_id: 'DLS-QUICK-1', in_game_name: 'Quick FC' }, admin);
+      assert.equal(q.status, 201); assert.equal(q.body.warning, undefined);
+      assert.equal((await req('POST', `/api/tournaments/${t.id}/participants`, { new_name: 'Thief', in_game_id: 'dls-quick-1' }, admin)).status, 400, 'in-game ID already taken');
+      const d = (await req('GET', '/api/tournaments/' + t.id)).body, qp = d.participants.find(p => p.name === 'QuickDls');
+      assert.equal(qp.in_game_id, 'DLS-QUICK-1'); assert.equal(qp.in_game_name, 'Quick FC'); assert.match(qp.gamz_id, /^GMZ-/);
+      // a player who links their ID can register without override
+      const t2 = (await req('POST', '/api/tournaments', { game_id: 'efootball', name: 'Gate 2', format: 'single_elim', mode: '1v1' }, admin)).body;
+      const ok = await req('POST', `/api/tournaments/${t2.id}/participants`, { player_id: anaId }, admin); assert.equal(ok.status, 201); assert.equal(ok.body.warning, undefined);
+    });
+    await test('team registration needs every member linked (organizers can set IDs for them)', async () => {
+      const mk = async n => (await req('POST', '/api/players', { gamer_tag: n }, admin)).body;
+      const a = await mk('TeamA1'), b = await mk('TeamA2'); assert.match(a.gamz_id, /^GMZ-/);
+      await req('PUT', `/api/players/${a.id}/game-ids/codm`, { in_game_id: '6711111111111111' }, admin);
+      const team = (await req('POST', '/api/teams', { name: 'Gate Squad', game_id: 'codm', members: [a.id, b.id] }, admin)).body;
+      const t = (await req('POST', '/api/tournaments', { game_id: 'codm', name: 'Gate 5v5', format: 'single_elim', mode: '5v5' }, admin)).body;
+      const r1 = await req('POST', `/api/tournaments/${t.id}/participants`, { team_id: team.id }, admin); assert.equal(r1.status, 409); assert.deepEqual(r1.body.missing, ['TeamA2']);
+      assert.equal((await req('PUT', `/api/players/${b.id}/game-ids/codm`, { in_game_id: '6722222222222222', in_game_name: 'A2_CM' }, admin)).status, 200);
+      assert.equal((await req('POST', `/api/tournaments/${t.id}/participants`, { team_id: team.id }, admin)).status, 201);
+      const tm = (await req('GET', '/api/teams/' + team.id)).body.members; assert.deepEqual(tm.map(m => m.in_game_id).sort(), ['6711111111111111', '6722222222222222']);
+      const ent = (await req('GET', '/api/tournaments/' + t.id)).body.participants[0]; assert.equal(ent.members.length, 2); assert.ok(ent.members.every(m => m.in_game_id && m.gamz_id));
+    });
+    await test('search finds players by gamz ID (any spelling), in-game ID, in-game name and gamer tag', async () => {
+      const ids = r => r.body.players.map(p => p.id);
+      for (const q of [anaGz, anaGz.toLowerCase(), anaGz.replace('-', ''), anaGz.slice(4)]) { const r = await req('GET', '/api/search?q=' + encodeURIComponent(q)); assert.equal(r.body.players[0].id, anaId, q); assert.equal(r.body.players[0].matched, 'gamz ID'); }
+      const byIg = await req('GET', '/api/search?q=1111-222-333'); assert.deepEqual(ids(byIg), [anaId]); assert.equal(byIg.body.players[0].matched, 'eFootball User ID');
+      assert.ok(ids(await req('GET', '/api/search?q=Quick%20FC')).length === 1);
+      assert.ok(ids(await req('GET', '/api/search?q=anastr')).includes(anaId));
+      assert.ok(byIg.body.players[0].game_ids.some(x => x.in_game_id === '1111-222-333'));
+      assert.deepEqual((await req('GET', '/api/search?q=a')).body, { players: [], teams: [] });
+      assert.ok((await req('GET', '/api/search?q=Gate%20Squad')).body.teams.length === 1);
     });
     await test('login rate limit: 10 failed attempts → 429', async () => {
       let last; for (let i = 0; i < 11; i++) last = await req('POST', '/api/login', { username: 'admin', password: 'nope' + i });
