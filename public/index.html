@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>gamz — tournaments & leaderboards</title>
+<meta name="description" content="gamz mobile gaming community: eFootball, DLS, PUBG Mobile and Call of Duty: Mobile tournaments, live brackets and leaderboards.">
+<meta name="theme-color" content="#07060d">
+<meta name="color-scheme" content="dark light">
+<script>
+/* Runs before first paint: pick the theme (saved choice > system preference > dark) so there is no flash. */
+(function () {
+  var t = null; try { t = localStorage.getItem('gamz-theme'); } catch (e) {}
+  if (t !== 'light' && t !== 'dark') t = (window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', t);
+  var m = document.querySelector('meta[name=theme-color]'); if (m) m.setAttribute('content', t === 'light' ? '#f6f4fe' : '#07060d');
+})();
+</script>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="gamz">
+<link rel="preload" href="/fonts/inter-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/space-grotesk-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div class="aura-bg" aria-hidden="true"><i class="a1"></i><i class="a2"></i><i class="a3"></i></div>
+<header class="topbar">
+  <a href="#/" class="brand" aria-label="gamz home"><span class="logo-mark" aria-hidden="true"></span><span class="wordmark">gamz</span></a>
+  <nav class="topnav" aria-label="Main">
+    <a href="#/" data-nav="home">Home</a><a href="#/tournaments" data-nav="tournaments">Tournaments</a><a href="#/leaderboard" data-nav="leaderboard">Leaderboard</a><a href="#/pairing" data-nav="pairing">Pairing</a><a href="#/admin" data-nav="admin" class="staff-only" hidden>Admin</a><a href="#/system" data-nav="system" class="admin-only" hidden>System</a>
+  </nav>
+  <div class="top-actions">
+    <span class="live-pill" id="livePill" title="Live updates"><i></i><span>Live</span></span>
+    <button class="icon-btn" id="themeBtn" type="button" aria-label="Switch theme"></button>
+    <a class="icon-btn" id="meBtn" href="#/me" aria-label="Account"></a>
+  </div>
+</header>
+<main id="app" tabindex="-1"></main>
+<nav class="tabbar" aria-label="Main">
+  <a href="#/" data-nav="home"><span data-icon="home"></span><b>Home</b></a>
+  <a href="#/tournaments" data-nav="tournaments"><span data-icon="trophy"></span><b>Events</b></a>
+  <a href="#/leaderboard" data-nav="leaderboard"><span data-icon="chart"></span><b>Ranks</b></a>
+  <a href="#/pairing" data-nav="pairing"><span data-icon="shuffle"></span><b>Pairing</b></a>
+  <a href="#/me" data-nav="me"><span data-icon="user"></span><b>Me</b></a>
+</nav>
+<div id="modal" class="modal" hidden><div class="modal-backdrop" data-close></div><div class="sheet" role="dialog" aria-modal="true"><button class="icon-btn sheet-x" data-close aria-label="Close">✕</button><div id="modalBody"></div></div></div>
+<div id="toasts" class="toasts" aria-live="polite"></div>
+<script src="/app.js"></script>
+</body>
+</html>

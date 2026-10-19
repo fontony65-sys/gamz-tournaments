@@ -1,0 +1,26 @@
+# Render Blueprint: one FREE Node web service. Data lives in Turso (Render's free disk is wiped on every restart).
+# Variables marked "sync: false" are secrets: Render asks you to type them in when you create the Blueprint.
+services:
+  - type: web
+    name: gamz-tournaments
+    runtime: node
+    plan: free
+    buildCommand: npm install --omit=dev
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "20"
+      - key: GAMZ_DATABASE_URL      # libsql://gamz-<your-account>.turso.io
+        sync: false
+      - key: GAMZ_DATABASE_TOKEN    # Turso database token
+        sync: false
+      - key: ADMIN_PASSWORD         # your admin password (8+ characters)
+        sync: false
+      - key: ADMIN_USER
+        value: admin
+      - key: ALLOW_SIGNUP           # "false" closes public player sign-up
+        value: "true"
