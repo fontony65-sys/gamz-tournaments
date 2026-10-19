@@ -182,8 +182,8 @@ tournament's game (for teams: every roster member); organizers can override, and
 
 **teams**, **team_members** — squads, duos and 5v5 rosters. Team results on the overall leaderboard are credited to every current member.
 
-**users** — logins. Exactly one `admin` (username `ADMIN_USER`, password from `ADMIN_PASSWORD`, re-synced on every start); `organizer`
-accounts are created by the admin; `player` accounts come from public sign-up (`ALLOW_SIGNUP`). Passwords are hashed with scrypt + salt.
+**users** — logins. Exactly one `admin` (username `ADMIN_USER`, password from `ADMIN_PASSWORD`, re-synced on every start); the admin username is reserved from sign-up and organizer create. `organizer`
+accounts are created by the admin; `player` accounts come from public sign-up (`ALLOW_SIGNUP`). Passwords are hashed with scrypt + salt. `username` is `UNIQUE COLLATE NOCASE` (plus `idx_users_username`).
 
 **sessions** — login sessions stored in the database (so they survive restarts). Only a SHA-256 hash of the cookie token is stored. 7-day expiry.
 

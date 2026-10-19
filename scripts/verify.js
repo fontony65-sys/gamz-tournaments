@@ -357,6 +357,18 @@ async function playAll(tid, pick = m => (rnd() < 0.5 ? 'home' : 'away'), bo = 1)
       const c = (await req('POST', '/api/login', { username: 'org1', password: 'organizer-pass' })).cookie;
       await req('POST', '/api/logout', null, c); assert.equal((await req('GET', '/api/me', null, c)).body.user, null);
     });
+    await test('username uniqueness: duplicate signup fails; admin / ADMIN_USER is reserved', async () => {
+      const taken = await req('POST', '/api/signup', { username: 'player1', password: 'another-pass-1', gamer_tag: 'DupTag' });
+      assert.equal(taken.status, 400); assert.match(taken.body.error, /That username is taken/i);
+      const reserved = await req('POST', '/api/signup', { username: 'admin', password: 'not-admin-pass', gamer_tag: 'FakeAdmin' });
+      assert.equal(reserved.status, 400); assert.match(reserved.body.error, /That username is reserved/i);
+      const reservedCase = await req('POST', '/api/signup', { username: 'Admin', password: 'not-admin-pass', gamer_tag: 'FakeAdmin2' });
+      assert.equal(reservedCase.status, 400); assert.match(reservedCase.body.error, /That username is reserved/i);
+      const orgReserved = await req('POST', '/api/users', { username: 'ADMIN', password: 'organizer-pass' }, admin);
+      assert.equal(orgReserved.status, 400); assert.match(orgReserved.body.error, /That username is reserved/i);
+      const orgDup = await req('POST', '/api/users', { username: 'org1', password: 'organizer-pass' }, admin);
+      assert.equal(orgDup.status, 400); assert.match(orgDup.body.error, /That username is taken/i);
+    });
     await test('SSE: viewers receive an update event when a result is entered, and the leaderboard reflects it', async () => {
       const t = (await req('POST', '/api/tournaments', { game_id: 'efootball', name: 'SSE Cup', format: 'single_elim', mode: '1v1' }, admin)).body;
       for (const n of ['SseA', 'SseB']) assert.equal((await req('POST', `/api/tournaments/${t.id}/participants`, { new_name: n, in_game_id: n + '-0001' }, admin)).status, 201);

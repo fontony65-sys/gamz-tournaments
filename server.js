@@ -68,8 +68,26 @@ function limited(key, max, res) {
 const wrap = fn => async (req, res) => {
   try { await fn(req, res); }
   catch (e) { const st = e.status || (/constraint|CHECK|UNIQUE|FOREIGN/i.test(e.message) ? 400 : 500); if (st === 500) console.error(e);
-    res.status(st).json({ error: /UNIQUE/i.test(e.message) ? 'That name is already taken' : e.message }); }
+    const msg = /UNIQUE/i.test(e.message)
+      ? (/users\.username|username/i.test(e.message) ? 'That username is taken' : 'That name is already taken')
+      : e.message;
+    res.status(st).json({ error: msg }); }
 };
+
+// Username uniqueness: reserved admin name + taken check (UNIQUE COLLATE NOCASE is the final DB guard).
+async function assertUsernameAvailable(username) {
+  const wanted = String(username).trim();
+  if (wanted.toLowerCase() === ADMIN_USER.toLowerCase()) {
+    const e = Object.assign(new Error('That username is reserved'), { status: 400 }); throw e;
+  }
+  const adminRow = await db.get("SELECT username FROM users WHERE role='admin' LIMIT 1");
+  if (adminRow && String(adminRow.username).toLowerCase() === wanted.toLowerCase()) {
+    const e = Object.assign(new Error('That username is reserved'), { status: 400 }); throw e;
+  }
+  if (await db.get('SELECT 1 FROM users WHERE username=?', wanted)) {
+    const e = Object.assign(new Error('That username is taken'), { status: 400 }); throw e;
+  }
+}
 const need = (...roles) => (req, res, next) => {
   if (!req.user) return res.status(401).json({ error: 'Please log in' });
   if (!roles.includes(req.user.role)) return res.status(403).json({ error: 'You do not have permission for this' });
@@ -135,7 +153,7 @@ app.post('/api/signup', wrap(async (req, res) => {
   if (!/^[a-zA-Z0-9_.-]{3,24}$/.test(username)) return res.status(400).json({ error: 'Username: 3–24 letters, numbers, _ . -' });
   if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
   if (!TAG_RE.test(tag)) return res.status(400).json({ error: 'Gamer tag: 2–24 characters' });
-  if (await db.get('SELECT 1 FROM users WHERE username=?', username)) return res.status(400).json({ error: 'That username is taken' });
+  await assertUsernameAvailable(username);
   let p = await db.get('SELECT p.* FROM players p WHERE p.gamer_tag=?', tag);
   if (p && await db.get('SELECT 1 FROM users WHERE player_id=?', p.id)) return res.status(400).json({ error: 'That gamer tag already belongs to an account' });
   if (req.body?.game_id && req.body?.in_game_id) { // optional: link a first in-game ID right away (validated before creating anything)
@@ -445,6 +463,7 @@ app.post('/api/users', need('admin'), wrap(async (req, res) => {
   const username = String(req.body?.username || '').trim(), password = String(req.body?.password || '');
   if (!/^[a-zA-Z0-9_.-]{3,24}$/.test(username)) throw E.err('Username: 3–24 letters, numbers, _ . -');
   if (password.length < 8) throw E.err('Password must be at least 8 characters');
+  await assertUsernameAvailable(username);
   const r = await db.run(`INSERT INTO users (username,password_hash,role) VALUES (?,?,'organizer')`, username, hashPw(password));
   res.status(201).json({ id: r.lastInsertRowid, username, role: 'organizer' });
 }));
