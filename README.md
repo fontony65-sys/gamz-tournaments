@@ -1,7 +1,7 @@
 # gamz — tournaments, live brackets & leaderboards
 
 A mobile-first web app for the **gamz** gaming community. It hosts and tracks tournaments for **eFootball**, **Dream League Soccer (DLS)**,
-**PUBG Mobile**, **Call of Duty: Mobile** and **Free Fire** (Garena Free Fire / Free Fire MAX), with live brackets, results, per-game and overall leaderboards, player/team profiles,
+**PUBG Mobile**, **Call of Duty: Mobile**, **Free Fire** (Garena Free Fire / Free Fire MAX) and **EA SPORTS FC Mobile**, with live brackets, results, per-game and overall leaderboards, player/team profiles,
 a random-pairing tool, player accounts and an organizer/admin area. It works great on iPhone and can be added to the home screen.
 
 Built on the same stack as the loan dashboard: **Node 20 + Express + @libsql/client**, data in **Turso** (free hosted libSQL) with a local
@@ -33,6 +33,7 @@ remove example data).
   - PUBG Mobile Character ID
   - CoD Mobile UID
   - Free Fire UID
+  - FC Mobile Player ID
 
   Each game shows a hint on where to find the ID. Players can add one at sign-up; organizers can set one on quick-add or from the player's profile. One game ID can belong to only one gamz player.
 - **Registering for a tournament needs the game ID for that game**; for teams, every member needs one. If someone doesn't have it yet, the organizer gets a warning and can register them anyway.
@@ -43,7 +44,7 @@ remove example data).
 
 | Game | Formats | Scoring |
 |---|---|---|
-| **eFootball** / **DLS** | 1v1 single elimination (with byes for any number of players) · league · league + knockout (groups → top N to a bracket) | Score = goals. League: win 3, draw 1, loss 0, tie-break goal difference then goals scored. Knockout draw → penalty shoot-out decides the winner. |
+| **eFootball** / **DLS** / **FC Mobile** | 1v1 single elimination (with byes for any number of players) · league · league + knockout (groups → top N to a bracket) | Score = goals. League: win 3, draw 1, loss 0, tie-break goal difference then goals scored. Knockout draw → penalty shoot-out decides the winner. |
 | **PUBG Mobile** | Battle-royale points across several matches/maps (solo, duo, squad) | Per match: placement points + kill points. Default PMCO-style table: 1st 15, 2nd 12, 3rd 10, 4th 8, 5th 6, 6th 4, 7th 2, 8th–12th 1, 13th+ 0; 1 point per kill. Both are configurable per tournament. Tie-break: points → chicken dinners → placement points → kills → best last-match placement. |
 | **CoD Mobile** | 5v5 best-of-N series (Bo1/3/5/7) in **double elimination** (with grand-final reset) or single elimination · Battle royale (solo/duo/squad) with the same points system as PUBG | Series: maps won, winner needs ⌈N/2⌉. |
 | **Free Fire** (and Free Fire MAX) | Battle-royale lobbies (solo, duo, squad) on the same placement + kill points engine · **Clash Squad 4v4** best-of-N series (Bo1/3/5/7) in double or single elimination | BR default Free Fire esports-style table: 1st 12, 2nd 9, 3rd 8, 4th 7, 5th 6, 6th 5, 7th 4, 8th 3, 9th 2, 10th 1, 11th–12th 0; 1 point per kill (both configurable per tournament). Clash Squad: games won, winner needs ⌈N/2⌉; BR can't be 4v4 and Clash Squad brackets must be 4v4. |
@@ -159,7 +160,7 @@ lib/scoring.js            Points tables, BR standings, league table, placement p
 lib/leaderboard.js        Per-game + overall leaderboards (recomputed from results, cached until the next write)
 lib/ids.js                gamz IDs (generate, collision check, normalise for search) + per-game in-game IDs
 db/index.js               libSQL client (GAMZ_DATABASE_URL / GAMZ_DATABASE_TOKEN or local file) + migration runner
-db/migrations/            Schema migrations (*.sql) + JS migrations (005 gamz ID backfill, 006 Free Fire)
+db/migrations/            Schema migrations (*.sql) + JS migrations (005 gamz ID backfill, 006 Free Fire, 007 FC Mobile)
 db/seed.js                EXAMPLE data (local only) and example-data removal
 public/                   index.html, app.js (single-page app), app.css (dark + light themes), manifest, icons, fonts
 scripts/verify.js         Automated tests

@@ -248,15 +248,16 @@ async function playAll(tid, pick = m => (rnd() < 0.5 ? 'home' : 'away'), bo = 1)
   });
 
   console.log('Free Fire');
-  await test('Free Fire migration upgrades a pre-FF database in place (data kept) and is idempotent', async () => {
+  await test('Free Fire + FC Mobile migrations upgrade a pre-FF database in place (data kept) and are idempotent', async () => {
     const f = path.join(TMP, 'upgrade.db'), odb = open('file:' + f);
     await odb.run(`CREATE TABLE schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))`);
-    await odb.run("INSERT INTO schema_migrations(name) VALUES ('006_free_fire.js')"); await migrate(odb); // = a database from before Free Fire
-    await odb.run("DELETE FROM schema_migrations WHERE name='006_free_fire.js'");
+    await odb.run("INSERT INTO schema_migrations(name) VALUES ('006_free_fire.js'), ('007_fc_mobile.js')"); await migrate(odb); // = a database from before Free Fire / FC Mobile
+    await odb.run("DELETE FROM schema_migrations WHERE name IN ('006_free_fire.js', '007_fc_mobile.js')");
     assert.equal(await odb.get("SELECT 1 FROM games WHERE id='ff'"), undefined);
     await odb.run("INSERT INTO players (gamer_tag, gamz_id) VALUES ('RealPlayer', 'GMZ-REAL22')");
     await odb.run("INSERT INTO tournaments (game_id, name, format, mode) VALUES ('codm', 'Real Cup', 'double_elim', '5v5')");
-    assert.deepEqual(await migrate(odb), ['006_free_fire.js']);
+    assert.equal(await odb.get("SELECT 1 FROM games WHERE id='fcm'"), undefined);
+    assert.deepEqual(await migrate(odb), ['006_free_fire.js', '007_fc_mobile.js']);
     const ff = await odb.get("SELECT * FROM games WHERE id='ff'");
     assert.equal(ff.name, 'Free Fire'); assert.equal(ff.short_name, 'FF'); assert.equal(ff.id_label, 'Free Fire UID'); assert.match(ff.id_hint, /avatar/);
     assert.equal(ff.series_mode, '4v4'); assert.equal(ff.series_label, 'Clash Squad'); assert.deepEqual(JSON.parse(ff.formats).sort(), ['br_points', 'double_elim', 'single_elim']);
@@ -265,8 +266,12 @@ async function playAll(tid, pick = m => (rnd() < 0.5 ? 'home' : 'away'), bo = 1)
     assert.equal((await odb.get("SELECT COUNT(*) c FROM games WHERE id='efootball'")).c, 1, 'eFootball not duplicated');
     assert.deepEqual(await migrate(odb), [], 'second start applies nothing');
     const cols = (await odb.all('PRAGMA table_info(games)')).length, M6 = require('../db/migrations/006_free_fire.js');
-    await M6.up(odb); await M6.up(odb); // re-running the migration body is safe
-    assert.equal((await odb.all('PRAGMA table_info(games)')).length, cols); assert.equal((await odb.get('SELECT COUNT(*) c FROM games')).c, 5);
+    const M7 = require('../db/migrations/007_fc_mobile.js');
+    await M6.up(odb); await M6.up(odb); await M7.up(odb); await M7.up(odb); // re-running the migration bodies is safe
+    assert.equal((await odb.all('PRAGMA table_info(games)')).length, cols); assert.equal((await odb.get('SELECT COUNT(*) c FROM games')).c, 6);
+    const fcm = await odb.get("SELECT * FROM games WHERE id='fcm'");
+    assert.equal(fcm.name, 'FC Mobile'); assert.equal(fcm.short_name, 'FCM'); assert.equal(fcm.family, 'football'); assert.equal(fcm.id_label, 'FC Mobile Player ID'); assert.match(fcm.id_hint, /Player ID/);
+    const efb = await odb.get("SELECT formats, modes FROM games WHERE id='efootball'"); assert.equal(fcm.formats, efb.formats); assert.equal(fcm.modes, efb.modes);
     assert.equal((await odb.get("SELECT COUNT(*) c FROM tournaments WHERE name='Real Cup'")).c, 1); assert.equal((await odb.get("SELECT gamz_id FROM players WHERE gamer_tag='RealPlayer'")).gamz_id, 'GMZ-REAL22');
     odb.close();
   });
@@ -291,6 +296,20 @@ async function playAll(tid, pick = m => (rnd() < 0.5 ? 'home' : 'away'), bo = 1)
     await assert.rejects(E.recordResult(db, m.id, { home_score: 1, away_score: 0 }), /Best of 3/);
     await E.recordResult(db, m.id, { home_score: 2, away_score: 1 });
     await playAll(t, undefined, 3); assert.equal((await db.get('SELECT status FROM tournaments WHERE id=?', t)).status, 'completed');
+  });
+  await test('FC Mobile football rules: knockout draw needs penalties, league allows draws, league + knockout completes', async () => {
+    const pl = await players(4), t = await mkTournament({ game_id: 'fcm', name: 'FCM KO', format: 'single_elim', mode: '1v1' });
+    await register(t, pl); await E.generate(db, t);
+    const m = (await matches(t)).find(x => x.status === 'ready');
+    await assert.rejects(E.recordResult(db, m.id, { home_score: 1, away_score: 1 }), /penalty/);
+    await E.recordResult(db, m.id, { home_score: 1, away_score: 1, home_pens: 5, away_pens: 4 });
+    assert.equal((await db.get('SELECT winner_id FROM matches WHERE id=?', m.id)).winner_id, m.home_id);
+    const t2 = await mkTournament({ game_id: 'fcm', name: 'FCM League', format: 'league_knockout', mode: '1v1', group_count: 1, advance_per_group: 2 });
+    await register(t2, await players(4)); await E.generate(db, t2);
+    const lm = (await matches(t2)).find(x => x.stage === 'league'); await E.recordResult(db, lm.id, { home_score: 2, away_score: 2 });
+    for (const x of (await matches(t2)).filter(x => x.stage === 'league' && x.status === 'ready')) await E.recordResult(db, x.id, { home_score: 1, away_score: 0 });
+    await E.generateKnockout(db, t2); await playAll(t2); assert.equal((await db.get('SELECT status FROM tournaments WHERE id=?', t2)).status, 'completed');
+    assert.ok((await LB.compute(db)).games.fcm.length > 0, 'FC Mobile has its own leaderboard');
   });
   db.close();
 
@@ -409,7 +428,7 @@ async function playAll(tid, pick = m => (rnd() < 0.5 ? 'home' : 'away'), bo = 1)
     });
     await test('Free Fire over HTTP: listed in /api/games, mode/format validation, default points snapshot, FF UID, leaderboard tab, search', async () => {
       const g = (await req('GET', '/api/games')).body.games, ff = g.find(x => x.id === 'ff');
-      assert.ok(ff); assert.equal(ff.id_label, 'Free Fire UID'); assert.equal(g.filter(x => x.id === 'efootball').length, 1); assert.equal(g.length, 5);
+      assert.ok(ff); assert.equal(ff.id_label, 'Free Fire UID'); assert.equal(g.filter(x => x.id === 'efootball').length, 1); assert.equal(g.length, 6);
       const mk = b => req('POST', '/api/tournaments', { game_id: 'ff', name: 'FF test', ...b }, admin);
       assert.equal((await mk({ format: 'br_points', mode: '4v4' })).status, 400, 'BR cannot be 4v4');
       assert.equal((await mk({ format: 'single_elim', mode: 'squad' })).status, 400, 'Clash Squad brackets are 4v4');
@@ -424,6 +443,18 @@ async function playAll(tid, pick = m => (rnd() < 0.5 ? 'home' : 'away'), bo = 1)
       const s = await req('GET', '/api/search?q=1234567890'); assert.equal(s.body.players[0].id, anaId); assert.equal(s.body.players[0].matched, 'Free Fire UID');
       assert.equal((await req('GET', '/api/leaderboard?game=ff')).status, 200);
       const r = await req('POST', `/api/tournaments/${br.body.id}/participants`, { player_id: anaId }, admin); assert.equal(r.status, 400, 'squad BR takes teams, not players');
+    });
+    await test('FC Mobile over HTTP: listed, football formats only, FC Mobile Player ID gate + search, leaderboard tab', async () => {
+      const fcm = (await req('GET', '/api/games')).body.games.find(x => x.id === 'fcm');
+      assert.equal(fcm.name, 'FC Mobile'); assert.equal(fcm.family, 'football'); assert.deepEqual(fcm.formats, ['single_elim', 'league', 'league_knockout']); assert.deepEqual(fcm.modes, ['1v1']);
+      assert.equal((await req('POST', '/api/tournaments', { game_id: 'fcm', name: 'x', format: 'br_points', mode: '1v1' }, admin)).status, 400);
+      assert.equal((await req('POST', '/api/tournaments', { game_id: 'fcm', name: 'x', format: 'double_elim', mode: '1v1' }, admin)).status, 400);
+      const t = (await req('POST', '/api/tournaments', { game_id: 'fcm', name: 'FCM Cup', format: 'single_elim', mode: '1v1' }, admin)).body;
+      const r1 = await req('POST', `/api/tournaments/${t.id}/participants`, { player_id: anaId }, admin); assert.equal(r1.status, 409); assert.match(r1.body.error, /FC Mobile Player ID/);
+      assert.equal((await req('PUT', '/api/me/game-ids/fcm', { in_game_id: '555566667777' }, ana)).status, 200);
+      assert.equal((await req('POST', `/api/tournaments/${t.id}/participants`, { player_id: anaId }, admin)).status, 201);
+      assert.equal((await req('GET', '/api/search?q=555566667777')).body.players[0].matched, 'FC Mobile Player ID');
+      assert.equal((await req('GET', '/api/leaderboard?game=fcm')).status, 200);
     });
     await test('login rate limit: 10 failed attempts → 429', async () => {
       let last; for (let i = 0; i < 11; i++) last = await req('POST', '/api/login', { username: 'admin', password: 'nope' + i });

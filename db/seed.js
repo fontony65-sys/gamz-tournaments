@@ -133,6 +133,11 @@ async function seed({ reset = false } = {}) {
   // 10) Free Fire Clash Squad 4v4, 6 squads, Bo3 double elimination — LIVE
   t = await mkT(db, { game_id: 'ff', name: 'Clash Squad Showdown', format: 'double_elim', mode: '4v4', best_of: 3, starts_at: day(0), prize: '20 000 XAF', description: 'Example — Free Fire Clash Squad 4v4, best-of-3 series, double elimination.' });
   await register(db, t, { teams: ffTeams.slice(0, 6) }); await E.generate(db, t); await play(db, t, { family: 'team_shooter', limit: 5, detail: 'Clash Squad · Bermuda 4–2 · Kalahari 3–4 · Purgatory 4–1' });
+  // EA SPORTS FC Mobile (added later, appended so earlier example data stays identical)
+  for (let i = 0; i < P.length; i++) await IDS.setGameId(db, P[i], 'fcm', { in_game_id: digits(4) + digits(4) + digits(4), in_game_name: TAGS[i] });
+  // 11) FC Mobile 1v1 single elimination, 8 players — COMPLETED
+  t = await mkT(db, { game_id: 'fcm', name: 'FC Mobile Weekend Cup', format: 'single_elim', mode: '1v1', starts_at: day(-4), prize: '15 000 XAF', description: 'Example — EA SPORTS FC Mobile 1v1 knockout, penalties on a draw.' });
+  await register(db, t, { players: shuffle(P.slice(30, 50)).slice(0, 8) }); await E.generate(db, t); await play(db, t, { family: 'football' });
   // Example player account for trying the profile page locally.
   const pw = 'example-player-pass';
   const salt = crypto.randomBytes(16).toString('hex');

@@ -9,8 +9,9 @@ SQLite / libSQL (Turso in production, a local file `db/gamz.db` in development).
 | `002_games.sql` | Reference rows for the first four games (eFootball, DLS, PUBG Mobile, CoD Mobile); Free Fire is added by 006 |
 | `003_user_prefs.sql` | `users.theme` (dark/light preference synced to the account) |
 | `004_player_ids.sql` | `players.gamz_id` (unique index + immutability trigger), `player_game_ids` table, `games.id_label` / `games.id_hint` |
-| `006_free_fire.js` | Free Fire game row (`INSERT OR IGNORE`); new `games` columns `series_mode`, `series_label`, `default_points_table`, `br_maps` (added only if missing) and their values for CoDM/PUBG. Fully re-runnable |
 | `005_backfill_gamz_ids.js` | Gives every existing player a gamz ID (JS migration: IDs are random + collision-checked, which plain SQL can't do) |
+| `006_free_fire.js` | Free Fire game row (`INSERT OR IGNORE`); new `games` columns `series_mode`, `series_label`, `default_points_table`, `br_maps` (added only if missing) and their values for CoDM/PUBG. Fully re-runnable |
+| `007_fc_mobile.js` | EA SPORTS FC Mobile game row (`INSERT OR IGNORE`, football family, same formats/modes as eFootball/DLS, `id_label` FC Mobile Player ID). Re-runnable |
 
 ## ER diagram
 
@@ -37,7 +38,7 @@ erDiagram
   participants ||--o{ br_match_results : "placement + kills"
 
   games {
-    text id PK "efootball | dls | pubgm | codm | ff"
+    text id PK "efootball | dls | pubgm | codm | ff | fcm"
     text name
     text family "football | battle_royale | team_shooter"
     text accent
@@ -161,7 +162,7 @@ erDiagram
 **games** — the games gamz hosts (reference data, not example data). `family` decides the rules: `football` (goals, draws, penalties),
 `battle_royale` (placement + kill points), `team_shooter` (best-of-N series). `formats` / `modes` list what an organizer may pick.
 `id_label` / `id_hint` name the in-game ID and explain where to find it (eFootball User ID, Dream League Soccer Player ID,
-PUBG Mobile Character ID, CoD Mobile UID, Free Fire UID).
+PUBG Mobile Character ID, CoD Mobile UID, Free Fire UID, FC Mobile Player ID).
 `series_mode` is the mode bracket (best-of series) formats must use, and battle-royale formats may not use (CoDM `5v5`, Free Fire
 Clash Squad `4v4`); `series_label` is its in-game name. `default_points_table` is the BR placement table used when a tournament
 doesn't set its own (Free Fire: 12, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 0; NULL = PMCO-style default); it is copied into
