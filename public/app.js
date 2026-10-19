@@ -26,6 +26,7 @@ const ICONS = {
   pubgm: sv('<path d="M3 11a9 7 0 0 1 18 0z"/><path d="M3 11l9 9 9-9"/><path d="M12 11v9M7.5 11 12 20M16.5 11 12 20"/>'),
   copy: sv('<rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M5 15V6a2 2 0 0 1 2-2h8"/>'), search: sv('<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>'),
   idcard: sv('<rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="9" cy="11" r="2.2"/><path d="M5.8 16a3.4 3.4 0 0 1 6.4 0M14 10h4M14 13.5h3"/>'),
+  ff: sv('<path d="M12 2.5c.6 3 4.5 5.2 4.5 10a4.5 4.5 0 0 1-9 0c0-2.2 1-3.6 2.2-4.8.2 1.5.9 2.4 1.8 2.8C11.2 8 11.4 5.2 12 2.5z"/><path d="M12 20.5a2 2 0 0 1-2-2c0-1.3 1-2 2-3.3 1 1.3 2 2 2 3.3a2 2 0 0 1-2 2z"/><path d="M4 21h16"/>'),
   codm: sv('<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2.5"/><path d="M12 1.5v5M12 17.5v5M1.5 12h5M17.5 12h5"/>'),
 };
 const icon = n => ICONS[n] || '';
@@ -44,7 +45,7 @@ function toast(msg, err = false) {
   $('#toasts').append(t); setTimeout(() => { t.style.transition = 'opacity .5s'; t.style.opacity = 0; setTimeout(() => t.remove(), 500); }, 3200);
 }
 const FORMAT = { single_elim: 'Single elimination', double_elim: 'Double elimination', league: 'League', league_knockout: 'League + knockout', br_points: 'Battle royale · points' };
-const MODE = { '1v1': '1v1', solo: 'Solo', duo: 'Duo', squad: 'Squad', '5v5': '5v5' };
+const MODE = { '1v1': '1v1', solo: 'Solo', duo: 'Duo', squad: 'Squad', '5v5': '5v5', '4v4': '4v4' };
 const STATUS = { live: 'Live', registration: 'Registration open', completed: 'Completed', draft: 'Draft' };
 const game = id => S.gameById[id] || { id, name: id, short_name: id };
 const gameTag = id => `<span class="game-tag g-${esc(id)}">${icon(id)}${esc(game(id).short_name)}</span>`;
@@ -55,6 +56,10 @@ const avatar = (name, hue = 260, team = false, cls = '') => `<span class="avatar
 const utc = s => { if (!s) return null; s = String(s); return s.includes(' ') ? new Date(s.replace(' ', 'T') + 'Z') : new Date(s); };
 const fmtDate = s => { if (!s) return ''; const d = utc(s); return isNaN(d) ? esc(s) : d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' }) + (String(s).includes('T') ? ' · ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : ''); };
 const ago = s => { const d = utc(s); if (!d || isNaN(d)) return ''; const m = Math.round((Date.now() - d) / 60000); return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m / 60) + ' h ago' : Math.round(m / 1440) + ' d ago'; };
+// Placement points: the tournament's own table, else its game's default (e.g. Free Fire), else the PMCO-style default.
+const parseTable = s => { try { const a = JSON.parse(s); return Array.isArray(a) && a.length ? a : null; } catch { return null; } };
+const ptsTable = t => parseTable(t.points_table) || parseTable(game(t.game_id).default_points_table) || S.pointsTable;
+const listGames = () => { const n = S.games.map(g => g.name); return n.length > 1 ? n.slice(0, -1).join(', ') + ' and ' + n[n.length - 1] : n.join(''); };
 const isStaff = () => S.me && (S.me.role === 'admin' || S.me.role === 'organizer');
 const isTeamMode = t => !['1v1', 'solo'].includes(t.mode);
 const profileLink = p => p.player_id ? `#/p/${p.player_id}` : `#/team/${p.team_id}`;
@@ -156,7 +161,12 @@ async function render() {
   location.hash = '#/';
 }
 window.addEventListener('hashchange', render);
-const view = html => { app.innerHTML = `<div class="view">${html}</div>`; return app.firstElementChild; };
+const view = html => {
+  app.innerHTML = `<div class="view">${html}</div>`;
+  // keep the selected game chip visible (5+ games overflow the chip row on phones)
+  $$('.chips', app).forEach(c => { const on = $('.chip.on', c); if (on && on.offsetLeft + on.offsetWidth > c.clientWidth) c.scrollLeft = on.offsetLeft - (c.clientWidth - on.offsetWidth) / 2; });
+  return app.firstElementChild;
+};
 function setQuery(q) { const { path } = parseHash(); const s = new URLSearchParams(Object.entries(q).filter(([, v]) => v != null && v !== '')).toString(); history.replaceState(null, '', '#' + path + (s ? '?' + s : '')); }
 
 /* ---------- shared renderers ---------- */
@@ -187,7 +197,7 @@ route(/^\/$/, async () => {
       <section class="card hero">
         <div class="eyebrow">gamz · mobile esports community</div>
         <h1>Play together.<br><span>Climb together.</span></h1>
-        <p>Tournaments, live brackets and leaderboards for eFootball, DLS, PUBG Mobile and Call of Duty: Mobile.</p>
+        <p>Tournaments, live brackets and leaderboards for ${esc(listGames())}.</p>
         <div class="row wrap"><a class="btn primary" href="#/tournaments">${icon('trophy')}Tournaments</a><a class="btn" href="#/leaderboard">${icon('chart')}Leaderboard</a></div>
         <div class="stats">
           <div class="stat"><b>${d.counts.live}</b><span>Live now</span></div><div class="stat"><b>${d.counts.tournaments}</b><span>Events</span></div>
@@ -288,7 +298,7 @@ function tHeader(d) {
     <div class="row wrap">${gameTag(t.game_id)}<span class="right row" style="gap:6px">${t.is_example ? '<span class="badge example">Example</span>' : ''}${badge(t.status)}</span></div>
     <h1>${esc(t.name)}</h1>
     ${t.description ? `<div class="small muted">${esc(t.description)}</div>` : ''}
-    <div class="kv"><span>${esc(FORMAT[t.format])}</span><span><b>${esc(MODE[t.mode] || t.mode)}</b></span>${t.family === 'team_shooter' && t.format !== 'br_points' ? `<span>Best of <b>${t.best_of}</b></span>` : ''}${t.format === 'br_points' ? `<span><b>${t.br_match_count}</b> matches</span><span><b>${t.kill_points}</b> pt / kill</span>` : ''}<span><b>${d.participants.length}</b> ${isTeamMode(t) ? 'teams' : 'players'}</span>${t.prize ? `<span>Prize <b>${esc(t.prize)}</b></span>` : ''}${t.starts_at ? `<span>${fmtDate(t.starts_at)}</span>` : ''}</div>
+    <div class="kv"><span>${esc(FORMAT[t.format])}</span>${t.series_label && t.format !== 'br_points' ? `<span>${esc(t.series_label)}</span>` : ''}<span><b>${esc(MODE[t.mode] || t.mode)}</b></span>${t.family === 'team_shooter' && t.format !== 'br_points' ? `<span>Best of <b>${t.best_of}</b></span>` : ''}${t.format === 'br_points' ? `<span><b>${t.br_match_count}</b> matches</span><span><b>${t.kill_points}</b> pt / kill</span>` : ''}<span><b>${d.participants.length}</b> ${isTeamMode(t) ? 'teams' : 'players'}</span>${t.prize ? `<span>Prize <b>${esc(t.prize)}</b></span>` : ''}${t.starts_at ? `<span>${fmtDate(t.starts_at)}</span>` : ''}</div>
     ${champ ? `<a class="champ" href="${profileLink(champ)}"><span class="tro">${icon('trophy')}</span><div><div class="tiny dim">Champion</div><div style="font:700 17px 'Space Grotesk'">${esc(champ.name)}</div></div></a>` : ''}
     ${isStaff() ? `<div style="margin-top:14px"><a class="btn sm" href="#/admin/t/${t.id}">${icon('edit')}Manage & enter results</a></div>` : ''}
   </section>`;
@@ -310,7 +320,7 @@ function brTable(d, flashSet = new Set()) {
     ${d.standings.br.map((s, i) => { const p = P.get(s.participant_id); return `<tr class="${i < 3 && s.played ? 'top' : ''} ${flashSet.has(s.participant_id) ? 'flash' : ''}"><td><span class="rank r${s.played ? i + 1 : 0}">${i + 1}</span></td><td class="name"><a href="${profileLink(p)}">${avatar(s.name, p.avatar_hue, !!p.team_id)}<span class="ellipsis">${esc(s.name)}</span></a></td><td class="total">${s.total}</td><td>${s.wwcd}</td><td>${s.kills}</td><td>${s.placement_points}</td>${brm.map(m => { const pm = s.per_match[m.id]; return `<td>${pm ? `<span class="mchip ${pm.placement === 1 ? 'dinner' : ''}" title="#${pm.placement}, ${pm.kills} kills">${pm.points}</span>` : '<span class="dim">–</span>'}</td>`; }).join('')}</tr>`; }).join('')}
     </tbody></table></div></div>
     <details class="explain" style="margin-top:12px"><summary>How BR points work</summary>
-      <ul><li>Points per match = placement points + ${d.tournament.kill_points} × kills.</li><li>Placement points: ${(d.tournament.points_table ? JSON.parse(d.tournament.points_table) : S.pointsTable).map((p, i) => `#${i + 1}: ${p}`).join(', ')}; lower places 0.</li><li>Ties: total points → chicken dinners → placement points → kills → best last-match placement.</li></ul></details>`;
+      <ul><li>Points per match = placement points + ${d.tournament.kill_points} × kills.</li><li>Placement points: ${ptsTable(d.tournament).map((p, i) => `#${i + 1}: ${p}`).join(', ')}; lower places 0.</li><li>Ties: total points → chicken dinners → placement points → kills → best last-match placement.</li></ul></details>`;
 }
 function matchesList(d) {
   const P = nameMap(d);
@@ -419,7 +429,7 @@ function openResultForm(d, m) {
   });
 }
 function openBrForm(d, m) {
-  const t = d.tournament, table = t.points_table ? JSON.parse(t.points_table) : S.pointsTable, kp = t.kill_points;
+  const t = d.tournament, table = ptsTable(t), kp = t.kill_points;
   const existing = new Map((m.br || []).map(r => [r.participant_id, r]));
   let order = d.standings.br.map(s => d.participants.find(p => p.id === s.participant_id));
   if (existing.size) order.sort((a, b) => (existing.get(a.id)?.placement || 999) - (existing.get(b.id)?.placement || 999));
@@ -657,11 +667,11 @@ function tournamentForm(t = {}) {
   return `<form class="form" id="tf">
     <label class="field">Game<select class="input" name="game_id" ${locked ? 'disabled' : ''}>${S.games.map(g => `<option value="${g.id}" ${g.id === gid ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select></label>
     <label class="field">Name<input class="input" name="name" required value="${esc(t.name || '')}" placeholder="e.g. gamz Friday Cup"></label>
-    <div class="two"><label class="field">Format<select class="input" name="format" ${locked ? 'disabled' : ''}></select></label><label class="field">Mode<select class="input" name="mode" ${locked ? 'disabled' : ''}></select></label></div>
+    <div class="two"><label class="field">Format<select class="input" name="format" ${locked ? 'disabled' : ''}></select></label><label class="field">Mode<select class="input" name="mode" ${locked ? 'disabled' : ''}></select></label></div><div class="tiny dim" id="fmthint" style="margin-top:-6px"></div>
     <div class="two" data-show="series"><label class="field">Best of<select class="input" name="best_of">${[1, 3, 5, 7].map(n => `<option ${n === (t.best_of > 1 ? t.best_of : 3) ? 'selected' : ''}>${n}</option>`).join('')}</select></label><span></span></div>
     <div class="two" data-show="league"><label class="field">Groups<input class="input" name="group_count" inputmode="numeric" value="${t.group_count || 1}" ${locked ? 'disabled' : ''}></label><label class="field" data-show="lko">Advance per group<input class="input" name="advance_per_group" inputmode="numeric" value="${t.advance_per_group || 2}"></label></div>
     <div data-show="br" class="form"><div class="two"><label class="field">Matches / maps<input class="input" name="br_match_count" inputmode="numeric" value="${t.br_match_count || 6}" ${locked ? 'disabled' : ''}></label><label class="field">Points per kill<input class="input" name="kill_points" inputmode="decimal" value="${t.kill_points ?? 1}"></label></div>
-      <label class="field">Placement points <span class="hint">1st, 2nd, 3rd… (PMCO-style default)</span><input class="input" name="points_table" value="${esc(t.points_table ? JSON.parse(t.points_table).join(', ') : S.pointsTable.join(', '))}"></label></div>
+      <label class="field">Placement points <span class="hint" id="pthint">1st, 2nd, 3rd… (game default)</span><input class="input" name="points_table" value="${esc(t.points_table ? JSON.parse(t.points_table).join(', ') : ptsTable({ game_id: gid }).join(', '))}"></label></div>
     <div class="two"><label class="field">Starts<input class="input" type="datetime-local" name="starts_at" value="${esc(t.starts_at || '')}"></label><label class="field">Prize<input class="input" name="prize" value="${esc(t.prize || '')}" placeholder="optional"></label></div>
     <label class="field">Description<textarea class="input" name="description">${esc(t.description || '')}</textarea></label>
     ${!locked ? `<label class="field">Visibility<select class="input" name="status"><option value="registration" ${t.status !== 'draft' ? 'selected' : ''}>Public (registration open)</option><option value="draft" ${t.status === 'draft' ? 'selected' : ''}>Draft (hidden)</option></select></label>` : ''}
@@ -672,12 +682,16 @@ function wireTournamentForm(root, t, done) {
   const sync = () => {
     const g = S.gameById[f.game_id.value], fm = f.format.value || t.format, md = f.mode.value || t.mode;
     f.format.innerHTML = g.formats.map(x => `<option value="${x}" ${x === fm ? 'selected' : ''}>${FORMAT[x]}</option>`).join('');
-    let modes = g.modes; if (g.id === 'codm') modes = f.format.value === 'br_points' ? ['squad', 'duo', 'solo'] : ['5v5'];
+    let modes = g.modes; if (g.series_mode) modes = f.format.value === 'br_points' ? g.modes.filter(m => m !== g.series_mode) : [g.series_mode]; // CoDM 5v5 / FF Clash Squad 4v4
+    f.format.querySelectorAll('option').forEach(o => { if (g.series_label && o.value !== 'br_points') o.textContent = FORMAT[o.value] + ' · ' + g.series_label; else if (o.value === 'br_points') o.textContent = FORMAT[o.value]; });
+    if (f.points_table && !t.points_table && !f.points_table.dataset.touched) f.points_table.value = ptsTable({ game_id: g.id }).join(', ');
+    const fh = $('#fmthint', root); if (fh) fh.textContent = f.format.value === 'br_points' ? `Battle-royale lobbies (${g.modes.filter(m => m !== g.series_mode).map(m => MODE[m]).join(' / ')}): placement + kill points over several matches.` : g.series_mode ? `${g.series_label || 'Bracket'} ${g.series_mode}: best-of-N series in a bracket.` : '';
+    const ph = $('#pthint', root); if (ph) ph.textContent = `1st, 2nd, 3rd… (${g.default_points_table ? g.short_name + ' default' : 'PMCO-style default'})`;
     f.mode.innerHTML = modes.map(x => `<option value="${x}" ${x === md ? 'selected' : ''}>${MODE[x]}</option>`).join('');
     const F = f.format.value;
     $$('[data-show]', root).forEach(e => { const k = e.dataset.show; e.hidden = !(k === 'series' ? g.family === 'team_shooter' && F !== 'br_points' : k === 'league' ? F.startsWith('league') : k === 'lko' ? F === 'league_knockout' : k === 'br' ? F === 'br_points' : true); });
   };
-  f.game_id.onchange = () => { f.format.value = ''; sync(); }; f.format.onchange = sync; sync();
+  f.game_id.onchange = () => { f.format.value = ''; sync(); }; f.format.onchange = sync; if (f.points_table) f.points_table.oninput = () => { f.points_table.dataset.touched = '1'; }; sync();
   f.onsubmit = async e => {
     e.preventDefault(); const b = Object.fromEntries(new FormData(f));
     $$('[data-show]', root).forEach(x => { if (x.hidden) $$('[name]', x).forEach(i => delete b[i.name]); });

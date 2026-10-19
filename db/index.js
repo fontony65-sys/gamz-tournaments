@@ -12,11 +12,14 @@ const IS_REMOTE = !DB_URL.startsWith('file:');
 
 const plain = rs => rs.rows.map(r => { const o = {}; rs.columns.forEach((c, i) => { const v = r[i]; o[c] = typeof v === 'bigint' ? Number(v) : v; }); return o; });
 
-function open() {
-  const client = createClient({ url: DB_URL, authToken: IS_REMOTE ? (process.env.GAMZ_DATABASE_TOKEN || undefined) : undefined });
+// open() = the configured DB. open('file:/some/path.db') = another LOCAL file (tests); only file: URLs are accepted here.
+function open(localFileUrl) {
+  if (localFileUrl && !String(localFileUrl).startsWith('file:')) throw new Error('open(url) only accepts local file: URLs');
+  const url = localFileUrl || DB_URL, remote = localFileUrl ? false : IS_REMOTE;
+  const client = createClient({ url, authToken: remote ? (process.env.GAMZ_DATABASE_TOKEN || undefined) : undefined });
   const exec = (sql, args = []) => client.execute({ sql, args });
   return {
-    client, url: DB_URL, remote: IS_REMOTE,
+    client, url, remote,
     all: async (sql, ...args) => plain(await exec(sql, args)),
     get: async (sql, ...args) => plain(await exec(sql, args))[0],
     run: async (sql, ...args) => { const r = await exec(sql, args); return { changes: r.rowsAffected, lastInsertRowid: r.lastInsertRowid == null ? null : Number(r.lastInsertRowid) }; },

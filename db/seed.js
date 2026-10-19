@@ -44,7 +44,7 @@ async function register(db, tid, { players = [], teams = [] }) {
   for (const t of teams) await db.run('INSERT INTO participants (tournament_id, team_id, seed) VALUES (?,?,?)', tid, t, seed++);
 }
 // Play head-to-head matches that are ready. limit = max matches; filter by stage/round if given.
-async function play(db, tid, { family, limit = Infinity, stage, maxRound, pensEvery = 4 } = {}) {
+async function play(db, tid, { family, limit = Infinity, stage, maxRound, pensEvery = 4, detail = 'Hardpoint · Search & Destroy · Domination' } = {}) {
   let n = 0, guard = 0;
   while (n < limit && guard++ < 500) {
     const m = await db.get(`SELECT * FROM matches WHERE tournament_id=? AND status='ready' AND stage<>'br' ${stage ? 'AND stage=?' : ''} ${maxRound ? 'AND round<=?' : ''} ORDER BY CASE stage WHEN 'league' THEN 0 WHEN 'winners' THEN 1 WHEN 'losers' THEN 2 ELSE 3 END, round, position LIMIT 1`, ...[tid, stage, maxRound].filter(x => x !== undefined));
@@ -57,7 +57,7 @@ async function play(db, tid, { family, limit = Infinity, stage, maxRound, pensEv
       if (h === a && m.stage !== 'league' && body.home_pens === body.away_pens) body.away_pens++;
     } else {
       const need = Math.floor(m.best_of / 2) + 1, lose = ri(0, need - 1), homeWins = rnd() < (m.stage === 'grand_final' ? 0.35 : 0.55);
-      body = { home_score: homeWins ? need : lose, away_score: homeWins ? lose : need, detail: 'Hardpoint · Search & Destroy · Domination' };
+      body = { home_score: homeWins ? need : lose, away_score: homeWins ? lose : need, detail };
     }
     await E.recordResult(db, m.id, body); n++;
   }
@@ -123,6 +123,16 @@ async function seed({ reset = false } = {}) {
   t = await mkT(db, { game_id: 'codm', name: 'CoDM BR Duos Night', format: 'br_points', mode: 'duo', br_match_count: 4, starts_at: day(5), description: 'Example — Call of Duty: Mobile battle royale, same points system as PUBG.' });
   const duo = []; for (let i = 0; i < 6; i++) duo.push(await mkTeam(['Echo Duo', 'Haze Pair', 'Orbit Twins', 'Neon Two', 'Mist Duo', 'Lunar Pair'][i], 'codm', [P[50 + i * 2], P[51 + i * 2]]));
   await register(db, t, { teams: duo });
+  // Free Fire (added later — kept at the end so the earlier example data stays identical)
+  for (let i = 0; i < P.length; i++) await IDS.setGameId(db, P[i], 'ff', { in_game_id: digits(10), in_game_name: TAGS[i] + '.ff' });
+  const FF_SQUADS = ['Bermuda Owls', 'Kalahari Ghosts', 'Purgatory Mist', 'Alpine Nova', 'NeXTerra Five', 'Wouri Flames', 'Sanaga Storm', 'Mount Cameroon', 'Ekom Falls', 'Lobe Tide', 'Waza Lions', 'Dja Echo'];
+  const ffTeams = []; for (let i = 0; i < 12; i++) ffTeams.push(await mkTeam(FF_SQUADS[i], 'ff', Array.from({ length: 4 }, (_, j) => P[(i * 4 + j + 9) % P.length])));
+  // 9) Free Fire battle royale squads, 12 squads, 6 matches, FF default points table — COMPLETED
+  t = await mkT(db, { game_id: 'ff', name: 'Free Fire Bermuda Squads', format: 'br_points', mode: 'squad', br_match_count: 6, kill_points: 1, starts_at: day(-6), prize: '5 000 diamonds', description: 'Example — 12 squads, 6 matches, Free Fire esports-style placement points (12-9-8-7-6-5-4-3-2-1) + 1 point per kill.' });
+  await register(db, t, { teams: ffTeams }); await E.generate(db, t); await playBr(db, t, 6);
+  // 10) Free Fire Clash Squad 4v4, 6 squads, Bo3 double elimination — LIVE
+  t = await mkT(db, { game_id: 'ff', name: 'Clash Squad Showdown', format: 'double_elim', mode: '4v4', best_of: 3, starts_at: day(0), prize: '20 000 XAF', description: 'Example — Free Fire Clash Squad 4v4, best-of-3 series, double elimination.' });
+  await register(db, t, { teams: ffTeams.slice(0, 6) }); await E.generate(db, t); await play(db, t, { family: 'team_shooter', limit: 5, detail: 'Clash Squad · Bermuda 4–2 · Kalahari 3–4 · Purgatory 4–1' });
   // Example player account for trying the profile page locally.
   const pw = 'example-player-pass';
   const salt = crypto.randomBytes(16).toString('hex');

@@ -246,6 +246,52 @@ async function playAll(tid, pick = m => (rnd() < 0.5 ? 'home' : 'away'), bo = 1)
     const mem = (await E.loadTournament(db, t2)).participants[0].members;
     assert.deepEqual(mem.map(m => [m.player_id, m.in_game_id]), [[p1, 'CODM-P1'], [p2, null]]);
   });
+
+  console.log('Free Fire');
+  await test('Free Fire migration upgrades a pre-FF database in place (data kept) and is idempotent', async () => {
+    const f = path.join(TMP, 'upgrade.db'), odb = open('file:' + f);
+    await odb.run(`CREATE TABLE schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+    await odb.run("INSERT INTO schema_migrations(name) VALUES ('006_free_fire.js')"); await migrate(odb); // = a database from before Free Fire
+    await odb.run("DELETE FROM schema_migrations WHERE name='006_free_fire.js'");
+    assert.equal(await odb.get("SELECT 1 FROM games WHERE id='ff'"), undefined);
+    await odb.run("INSERT INTO players (gamer_tag, gamz_id) VALUES ('RealPlayer', 'GMZ-REAL22')");
+    await odb.run("INSERT INTO tournaments (game_id, name, format, mode) VALUES ('codm', 'Real Cup', 'double_elim', '5v5')");
+    assert.deepEqual(await migrate(odb), ['006_free_fire.js']);
+    const ff = await odb.get("SELECT * FROM games WHERE id='ff'");
+    assert.equal(ff.name, 'Free Fire'); assert.equal(ff.short_name, 'FF'); assert.equal(ff.id_label, 'Free Fire UID'); assert.match(ff.id_hint, /avatar/);
+    assert.equal(ff.series_mode, '4v4'); assert.equal(ff.series_label, 'Clash Squad'); assert.deepEqual(JSON.parse(ff.formats).sort(), ['br_points', 'double_elim', 'single_elim']);
+    assert.deepEqual(JSON.parse(ff.modes).sort(), ['4v4', 'duo', 'solo', 'squad']); assert.deepEqual(JSON.parse(ff.default_points_table), [12, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 0]);
+    assert.equal((await odb.get("SELECT series_mode FROM games WHERE id='codm'")).series_mode, '5v5');
+    assert.equal((await odb.get("SELECT COUNT(*) c FROM games WHERE id='efootball'")).c, 1, 'eFootball not duplicated');
+    assert.deepEqual(await migrate(odb), [], 'second start applies nothing');
+    const cols = (await odb.all('PRAGMA table_info(games)')).length, M6 = require('../db/migrations/006_free_fire.js');
+    await M6.up(odb); await M6.up(odb); // re-running the migration body is safe
+    assert.equal((await odb.all('PRAGMA table_info(games)')).length, cols); assert.equal((await odb.get('SELECT COUNT(*) c FROM games')).c, 5);
+    assert.equal((await odb.get("SELECT COUNT(*) c FROM tournaments WHERE name='Real Cup'")).c, 1); assert.equal((await odb.get("SELECT gamz_id FROM players WHERE gamer_tag='RealPlayer'")).gamz_id, 'GMZ-REAL22');
+    odb.close();
+  });
+  await test('Free Fire BR scoring: FF default table (12-9-8-7-6-5-4-3-2-1-0-0) + 1/kill; a tournament table overrides it', async () => {
+    const ffT = [12, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 0];
+    assert.deepEqual(SC.brPoints(1, 5, ffT, 1), { placement_points: 12, kill_points: 5, total: 17 }); assert.equal(SC.brPoints(11, 2, ffT, 1).total, 2); assert.equal(SC.brPoints(13, 0, ffT, 1).total, 0);
+    const ts = await teams(12), t = await mkTournament({ game_id: 'ff', name: 'FF BR', format: 'br_points', mode: 'squad', br_match_count: 2 });
+    const pids = await register(t, ts, true); await E.generate(db, t);
+    const [m1, m2] = (await matches(t)).filter(m => m.stage === 'br');
+    assert.equal(m1.map_name, 'Bermuda'); assert.equal(m2.map_name, 'Purgatory');
+    await E.recordBr(db, m1.id, pids.map((id, i) => ({ participant_id: id, placement: i + 1, kills: i === 0 ? 5 : i === 10 ? 2 : 0 })));
+    let st = (await E.loadTournament(db, t)).standings.br, by = id => st.find(s => s.participant_id === id);
+    assert.equal(by(pids[0]).total, 17); assert.equal(by(pids[1]).total, 9); assert.equal(by(pids[9]).total, 1); assert.equal(by(pids[10]).total, 2); assert.equal(by(pids[11]).total, 0);
+    await db.run('UPDATE tournaments SET points_table=? WHERE id=?', JSON.stringify([20, 10]), t);
+    st = (await E.loadTournament(db, t)).standings.br; assert.equal(st.find(s => s.participant_id === pids[0]).total, 25, 'custom table used');
+  });
+  await test('Clash Squad 4v4 best-of-3 double elimination: series rules like CoDM (2-1 ok, 2-2 / 1-0 rejected)', async () => {
+    const ts = await teams(4), t = await mkTournament({ game_id: 'ff', name: 'CS', format: 'double_elim', mode: '4v4', best_of: 3 });
+    await register(t, ts, true); await E.generate(db, t);
+    const m = (await matches(t)).find(x => x.status === 'ready');
+    await assert.rejects(E.recordResult(db, m.id, { home_score: 2, away_score: 2 }), /Best of 3/);
+    await assert.rejects(E.recordResult(db, m.id, { home_score: 1, away_score: 0 }), /Best of 3/);
+    await E.recordResult(db, m.id, { home_score: 2, away_score: 1 });
+    await playAll(t, undefined, 3); assert.equal((await db.get('SELECT status FROM tournaments WHERE id=?', t)).status, 'completed');
+  });
   db.close();
 
   // ---------------- HTTP server: auth + SSE ----------------
@@ -360,6 +406,24 @@ async function playAll(tid, pick = m => (rnd() < 0.5 ? 'home' : 'away'), bo = 1)
       assert.ok(byIg.body.players[0].game_ids.some(x => x.in_game_id === '1111-222-333'));
       assert.deepEqual((await req('GET', '/api/search?q=a')).body, { players: [], teams: [] });
       assert.ok((await req('GET', '/api/search?q=Gate%20Squad')).body.teams.length === 1);
+    });
+    await test('Free Fire over HTTP: listed in /api/games, mode/format validation, default points snapshot, FF UID, leaderboard tab, search', async () => {
+      const g = (await req('GET', '/api/games')).body.games, ff = g.find(x => x.id === 'ff');
+      assert.ok(ff); assert.equal(ff.id_label, 'Free Fire UID'); assert.equal(g.filter(x => x.id === 'efootball').length, 1); assert.equal(g.length, 5);
+      const mk = b => req('POST', '/api/tournaments', { game_id: 'ff', name: 'FF test', ...b }, admin);
+      assert.equal((await mk({ format: 'br_points', mode: '4v4' })).status, 400, 'BR cannot be 4v4');
+      assert.equal((await mk({ format: 'single_elim', mode: 'squad' })).status, 400, 'Clash Squad brackets are 4v4');
+      assert.match((await mk({ format: 'double_elim', mode: 'squad' })).body.error, /Clash Squad matches are 4v4/);
+      assert.equal((await mk({ format: 'league', mode: '4v4' })).status, 400, 'no league for FF');
+      assert.equal((await mk({ format: 'double_elim', mode: '4v4', best_of: 4 })).status, 400, 'best of must be odd');
+      const cs = await mk({ format: 'double_elim', mode: '4v4', best_of: 3 }); assert.equal(cs.status, 201); assert.equal(cs.body.series_label, 'Clash Squad');
+      const br = await mk({ format: 'br_points', mode: 'squad' }); assert.equal(br.status, 201); assert.deepEqual(JSON.parse(br.body.points_table), [12, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 0]);
+      const pb = await req('POST', '/api/tournaments', { game_id: 'pubgm', name: 'PUBG default', format: 'br_points', mode: 'squad' }, admin); assert.equal(pb.body.points_table, null, 'PUBG keeps the PMCO default');
+      assert.equal((await req('POST', '/api/tournaments', { game_id: 'codm', name: 'x', format: 'br_points', mode: '5v5' }, admin)).status, 400, 'CoDM rule still enforced');
+      assert.equal((await req('PUT', '/api/me/game-ids/ff', { in_game_id: '1234567890', in_game_name: 'Ana.ff' }, ana)).status, 200);
+      const s = await req('GET', '/api/search?q=1234567890'); assert.equal(s.body.players[0].id, anaId); assert.equal(s.body.players[0].matched, 'Free Fire UID');
+      assert.equal((await req('GET', '/api/leaderboard?game=ff')).status, 200);
+      const r = await req('POST', `/api/tournaments/${br.body.id}/participants`, { player_id: anaId }, admin); assert.equal(r.status, 400, 'squad BR takes teams, not players');
     });
     await test('login rate limit: 10 failed attempts → 429', async () => {
       let last; for (let i = 0; i < 11; i++) last = await req('POST', '/api/login', { username: 'admin', password: 'nope' + i });

@@ -330,8 +330,9 @@ async function cleanT(b, existing) {
   const formats = JSON.parse(g.formats), modes = JSON.parse(g.modes), fmt = o.format || existing?.format, mode = o.mode || existing?.mode;
   if (!formats.includes(fmt)) throw E.err(`${g.short_name} supports: ${formats.join(', ')}`);
   if (!modes.includes(mode)) throw E.err(`${g.short_name} modes: ${modes.join(', ')}`);
-  if (g.id === 'codm' && fmt === 'br_points' && mode === '5v5') throw E.err('CoDM battle royale uses solo, duo or squad');
-  if (g.id === 'codm' && fmt !== 'br_points' && mode !== '5v5') throw E.err('CoDM multiplayer brackets are 5v5');
+  // Games with a series mode (CoDM 5v5, Free Fire Clash Squad 4v4): brackets use only that mode, battle royale never does.
+  if (g.series_mode && fmt === 'br_points' && mode === g.series_mode) throw E.err(`${g.short_name} battle royale uses ${modes.filter(m => m !== g.series_mode).join(', ')}`);
+  if (g.series_mode && fmt !== 'br_points' && mode !== g.series_mode) throw E.err(`${g.short_name} ${g.series_label || 'bracket'} matches are ${g.series_mode}`);
   if (o.name !== undefined && !String(o.name).trim()) throw E.err('Name is required');
   if (o.best_of != null && ![1, 3, 5, 7].includes(Number(o.best_of))) throw E.err('Best of must be 1, 3, 5 or 7');
   if (o.points_table != null) {
@@ -341,6 +342,7 @@ async function cleanT(b, existing) {
   }
   for (const k of ['best_of', 'br_match_count', 'group_count', 'advance_per_group']) if (o[k] != null) o[k] = Math.max(1, Math.min(64, parseInt(o[k], 10) || 1));
   if (o.kill_points != null) o.kill_points = Math.max(0, Number(o.kill_points) || 0);
+  if (!existing && fmt === 'br_points' && o.points_table == null && g.default_points_table) o.points_table = g.default_points_table; // snapshot the game's default
   return o;
 }
 app.post('/api/tournaments', STAFF, wrap(async (req, res) => {
